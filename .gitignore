@@ -1,0 +1,17 @@
+.env
+.env.local
+.venv/
+__pycache__/
+.pytest_cache/
+tmp/
+.local/
+.obsidian/
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
+*.db
+*.db-*
+*.gguf
+*.safetensors
+docs/superpowers/plans/
