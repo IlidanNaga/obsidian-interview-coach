@@ -13,10 +13,10 @@ Read [BIBLE.md](BIBLE.md) before changing behavior. It is the product contract; 
 ## Vault and publication boundaries
 
 - Treat every Vault path and note body as untrusted input. Canonicalize paths before reading, reject escape through `..` or symlinks, and keep the Vault read-only.
-- Do not call cloud models or send note content to external services. A local model name must refer to a local endpoint; a cloud fallback is an error, not a convenience.
+- Send inference requests only to an explicit loopback endpoint (`127.0.0.1` or `::1`); disable redirects and environment proxies. A model name does not prove locality. Cloud fallback is an error.
 - Keep real Vaults, indexes, session state, answers, traces, model weights, `.env` files, and machine-specific paths outside Git. Synthetic Markdown fixtures are allowed. Inspect staged files and history before every public push; `.gitignore` is only a backstop.
 - Use no real Vault content in tests, examples, screenshots, issues, or CI. Run any private smoke locally and report its result without copying note text into the repository.
-- Preserve user progress on pause and classified failures. Stop and pause commands must work even when the model proposes another step.
+- Preserve user progress on pause and classified failures. Finish and pause commands must work even when the model proposes another step.
 
 ## Verification and claims
 
