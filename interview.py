@@ -509,7 +509,11 @@ def _view(state, error=None, message=None):
         message
         or {
             "need_question": "Question pending; use :retry to request it.",
-            "await_answer": "Enter your answer again." if state["status"] == "blocked" else "Enter an answer.",
+            "await_answer": (
+                "Use :skip, or :retry to re-enter your answer."
+                if state["status"] == "blocked"
+                else "Enter an answer or use :skip."
+            ),
             "await_next": "Feedback compares with the note; it is not an objective grade. Use :next, :pause or :finish.",
             "exhausted": "No new material remains. Use :pause or :finish.",
         }[state["phase"]]
@@ -667,7 +671,7 @@ def _topic_view(state, error=None, message=None):
         "indexing": "Index scan pending; use :retry for the next batch, :pause or :finish.",
         "discovery": "Discovery pending; use :retry for the next candidate, :pause or :finish.",
         "expansion": "Query expansion pending; use :retry, :pause or :finish.",
-        "await_answer": "Enter an answer." if state["status"] != "blocked" else "Use :retry, then re-enter the answer.",
+        "await_answer": "Enter an answer or use :skip.",
         "await_next": "Feedback compares with the notes, not an objective grade. Use :next, :pause or :finish.",
         "refused": "Topic not found in the completed indexed search; indexed topic suggestions are listed below.",
         "exhausted": "No more supported chunks in this indexed search. Use :pause or :finish.",
@@ -688,6 +692,8 @@ def _topic_view(state, error=None, message=None):
         }[state["status"]]
         if state["status"] == "blocked" and phase == "expansion":
             messages[phase] = "Expansion is blocked. A saved failure uses its one-call budget; use :pause or :finish."
+        elif state["status"] == "blocked" and phase == "await_answer":
+            messages[phase] = "Use :skip, :retry to re-enter the answer, :pause or :finish."
     effective_error = error or state["error"] or (terminal_error if state["status"] == "active" else None)
     search = state["search"]
     return {
@@ -1142,7 +1148,7 @@ def _dispatch_topic(directory, state, request):
         if state["phase"] in {"indexing", "discovery", "expansion"}:
             return _discover(directory, state)
         return _view(state, message="Enter your answer again." if state["phase"] == "await_answer" else None)
-    if state["status"] == "blocked":
+    if state["status"] == "blocked" and action != "skip":
         return _view(state, "retry_required")
     if action == "answer":
         if state["phase"] != "await_answer":
@@ -1151,9 +1157,11 @@ def _dispatch_topic(directory, state, request):
         if not isinstance(answer, str) or not answer.strip():
             return _view(state, "invalid_answer")
         return _infer(directory, state, _topic_chunk(state, note), answer)
-    if state["phase"] != "await_next":
+    if action != "skip" and state["phase"] != "await_next":
         return _view(state, "next_not_expected")
-    state.update(source=None, chunk_id=None, question=None, feedback=None, phase="discovery")
+    state.update(
+        status="active", error=None, source=None, chunk_id=None, question=None, feedback=None, phase="discovery"
+    )
     _save(directory, state)
     return _discover(directory, state)
 
@@ -1218,13 +1226,21 @@ def start_session(request: dict) -> dict:
 
 
 def dispatch(request: dict) -> dict:
-    """Handle answer/next/pause/retry/finish/resume without model-owned actions."""
+    """Handle answer/skip/next/pause/retry/finish/resume without model-owned actions."""
     try:
         if not isinstance(request, dict):
             raise SessionError("invalid_request")
         session_id = _session_id(request.get("session_id"))
         action = request.get("action")
-        if not isinstance(action, str) or action not in {"answer", "next", "pause", "retry", "finish", "resume"}:
+        if not isinstance(action, str) or action not in {
+            "answer",
+            "skip",
+            "next",
+            "pause",
+            "retry",
+            "finish",
+            "resume",
+        }:
             raise SessionError("invalid_action")
         directory = _state_dir(request.get("state_dir", DEFAULT_STATE_DIR))
         # Read-only preflight: reject Vault-contained state before chmod/lock
@@ -1234,6 +1250,8 @@ def dispatch(request: dict) -> dict:
         with _locked(directory, session_id):
             state = _read(directory, session_id)
             _state_dir(directory, state["vault"] if state["version"] == 2 else state["source"]["vault"])
+            if action == "skip" and (state["phase"] != "await_answer" or state["status"] not in {"active", "blocked"}):
+                return _view(state, "skip_not_expected")
             if state["status"] == "finished":
                 return _view(state, None if action == "finish" else "session_finished")
             if action == "finish":
@@ -1266,7 +1284,7 @@ def dispatch(request: dict) -> dict:
                 if state["phase"] == "need_question":
                     return _infer(directory, state, note["chunks"][state["cursor"]])
                 return _view(state, message="Enter your answer again." if state["phase"] == "await_answer" else None)
-            if state["status"] == "blocked":
+            if state["status"] == "blocked" and action != "skip":
                 return _view(state, "retry_required")
             if action == "answer":
                 if state["phase"] != "await_answer":
@@ -1275,9 +1293,16 @@ def dispatch(request: dict) -> dict:
                 if not isinstance(answer, str) or not answer.strip():
                     return _view(state, "invalid_answer")
                 return _infer(directory, state, note["chunks"][state["cursor"]], answer)
-            if state["phase"] != "await_next":
+            if action != "skip" and state["phase"] != "await_next":
                 return _view(state, "next_not_expected")
-            state.update(cursor=state["cursor"] + 1, question=None, feedback=None, phase="need_question")
+            state.update(
+                status="active",
+                error=None,
+                cursor=state["cursor"] + 1,
+                question=None,
+                feedback=None,
+                phase="need_question",
+            )
             if state["cursor"] == state["total"]:
                 state["phase"] = "exhausted"
             _save(directory, state)

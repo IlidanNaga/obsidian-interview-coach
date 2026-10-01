@@ -2,7 +2,7 @@
 
 Rehearse interview answers against your own Markdown notes using a local Ollama model. Questions and feedback cite supplied note text; feedback compares your answer with the notes, rather than giving an objective grade.
 
-**Implemented:** explicit-note and topic interviews through a CLI and reusable JSON API, validated citations, pause/resume, retry, and finish. A topic interview can move between notes and refuses to invent material when no supported chunk is found. **Planned:** whole-Vault coverage (step 4) and usefulness/resource evaluation before a framework comparison (step 5). See the product contract in [BIBLE.md](BIBLE.md) and the [architecture](ARCHITECTURE.md).
+**Implemented:** explicit-note and topic interviews through a CLI and reusable JSON API, validated citations, skip, pause/resume, retry, and finish. A topic interview can move between notes and refuses to invent material when no supported chunk is found. **Planned:** whole-Vault coverage (step 4) and usefulness/resource evaluation before a framework comparison (step 5). See the product contract in [BIBLE.md](BIBLE.md) and the [architecture](ARCHITECTURE.md).
 
 ## Prerequisites
 
@@ -53,9 +53,12 @@ Enter an answer at `>`, or use a command:
 | Command | Effect |
 | --- | --- |
 | `:next` | After feedback, advance to the next chunk in note mode or seek another supported chunk in topic mode. |
+| `:skip` | While a question awaits an answer, including a failed assessment, advance once without assessing or saving an answer. Resume a paused session first. |
 | `:pause` | Save the current position/question and exit the CLI. |
 | `:retry` | Retry a pending/failed question; after failed assessment, clear the block so you can re-enter the answer. |
 | `:finish` | Close the session; it cannot be resumed. The saved snapshot remains. |
+
+Use `:skip` explicitly to move past a question you cannot answer. Free text such as “I don't know” remains an answer: if model feedback echoes it, the privacy check still rejects that feedback, and `:skip` lets you continue without `:retry`. Skip clears the current question, feedback and error before the next bounded question/discovery step; a failure there preserves the advanced position for retry. It uses the existing exhausted/incomplete outcomes when material runs out and never extends the 32-candidate ceiling. In other phases, including paused or finished sessions, skip returns `skip_not_expected` without changing state; finish remains available.
 
 Copy the printed session ID to resume; this continues the saved position without automatically repeating inference:
 
@@ -96,6 +99,8 @@ paused = dispatch({"session_id": session_id, "action": "pause"})
 
 For topic mode, pass `"topic": "cache invalidation"` in place of `"note"`. If the result has `phase` `indexing`, `discovery`, or `expansion`, call `dispatch({"session_id": session_id, "action": "retry"})` to advance one bounded step. Topic results also include `outcome`, index `scan` counts, `complete`, and real-note `suggestions` when search ends without enough evidence.
 
+To move past a pending question without an assessment, use `dispatch({"session_id": session_id, "action": "skip"})`; no `answer` field is needed, and any supplied answer is ignored. This also works directly after a blocked failed assessment.
+
 In a later process, import `dispatch` and supply the saved ID:
 
 ```python
@@ -128,7 +133,7 @@ pyenv exec python interview.py start --help
 pyenv exec python interview.py resume --help
 ```
 
-The transport self-check is offline and mocked. [Controller tests](test_interview.py) and [index tests](test_topic_search.py) use synthetic notes and mocked inference to check containment, citations, topic admission/refusal, multi-note progression, state recovery, locking and privacy; they create fixtures in ignored `tmp/` and session fixtures in temporary storage outside the repository. They do not test whole-Vault coverage, which is planned.
+The transport self-check is offline and mocked. [Controller tests](test_interview.py) and [index tests](test_topic_search.py) use synthetic notes and mocked inference to check containment, citations, topic admission/refusal, multi-note progression, skip without assessment/answer retention, invalid-phase no-ops, pause/restart recovery, locking and privacy; they create fixtures in ignored `tmp/` and session fixtures in temporary storage outside the repository. They do not test whole-Vault coverage, which is planned.
 
 To check an already-running local model with a synthetic prompt:
 

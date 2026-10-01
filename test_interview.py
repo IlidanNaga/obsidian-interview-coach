@@ -93,6 +93,187 @@ class InterviewTests(unittest.TestCase):
     def snapshot(self):
         return Path(self.request["state_dir"]) / (self.session_id + ".json")
 
+    def restart(self, action, **fields):
+        # A fresh module has no controller memory; only private durable state.
+        spec = importlib.util.spec_from_file_location("interview_restarted", interview.__file__)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with patch.object(module, "chat", side_effect=self.model):
+            return module.dispatch(
+                {"session_id": self.session_id, "state_dir": self.request["state_dir"], "action": action, **fields}
+            )
+
+    def test_skip_advances_once_without_assessment_or_answer_storage(self):
+        self.note.write_text("# Cache one\nCache stores results.\n# Cache two\nCache removes stale entries.\n")
+        current = self.start()
+        before = json.loads(self.snapshot().read_text())
+        count = len(self.calls)
+        answer = "I don't know."
+        skipped = self.send("skip", answer=answer)
+        self.assertEqual((skipped["phase"], skipped["cursor"]), ("await_answer", current["cursor"] + 1))
+        self.assertEqual(skipped["question"]["citation"]["heading"], "Cache two")
+        self.assertIsNone(skipped["feedback"])
+        self.assertIsNone(skipped["error"])
+        self.assertEqual(len(self.calls), count + 1)
+        self.assertTrue(all("answer" not in json.loads(call["messages"][-1]["content"]) for call in self.calls))
+        self.assertTrue(all(call["format"] != interview.ASSESSMENT_SCHEMA for call in self.calls))
+        self.assertNotIn(answer, str(self.calls))
+        self.assertNotIn(answer, self.snapshot().read_text())
+        after = json.loads(self.snapshot().read_text())
+        self.assertEqual(set(after), set(before))
+        self.assertEqual((after["version"], after["limits"]), (before["version"], before["limits"]))
+        self.assertEqual(self.send("finish")["status"], "finished")
+
+    def test_skip_recovers_from_echoed_short_answer_without_retry(self):
+        self.note.write_text("# Cache one\nCache stores results.\n# Cache two\nCache removes stale entries.\n")
+        current = self.start()
+        answer = "I don't know."
+        self.proposal = {"label": "uncertain", "feedback": answer.upper(), "quote": "Cache stores results."}
+        failed = self.send("answer", answer=answer)
+        self.assertEqual(
+            (failed["phase"], failed["status"], failed["error"]), ("await_answer", "blocked", "invalid_output")
+        )
+        self.assertEqual(failed["cursor"], current["cursor"])
+        self.assertNotIn(answer.casefold(), self.snapshot().read_text().casefold())
+        self.send("pause")
+        saved = self.snapshot().read_bytes()
+        self.assertEqual(self.send("skip")["error"], "skip_not_expected")
+        self.assertEqual(self.snapshot().read_bytes(), saved)
+        self.assertEqual(self.restart("resume")["status"], "blocked")
+        self.proposal = None
+        count = len(self.calls)
+        result = self.send("skip", answer=answer)
+        self.assertEqual(
+            (result["phase"], result["status"], result["cursor"]), ("await_answer", "active", current["cursor"] + 1)
+        )
+        self.assertEqual(len(self.calls), count + 1)
+        self.assertNotEqual(self.calls[-1]["format"], interview.ASSESSMENT_SCHEMA)
+        self.assertNotIn(answer, str(self.calls[count:]))
+        self.assertNotIn(answer.casefold(), self.snapshot().read_text().casefold())
+        self.assertEqual(self.send("finish")["status"], "finished")
+
+    def test_skip_failure_preserves_advance_across_pause_and_restart(self):
+        self.note.write_text("# Cache one\nCache stores results.\n# Cache two\nCache removes stale entries.\n")
+        current = self.start()
+        before = json.loads(self.snapshot().read_text())
+        ledger = self.snapshot().with_suffix(".search") / "decisions.sqlite3"
+        decisions = ledger.read_bytes() if before["version"] == 2 else None
+        self.failure = "ollama request timed out"
+        count = len(self.calls)
+        result = self.send("skip")
+        expected_cursor = current["cursor"] + (before["version"] == 1)
+        self.assertEqual((result["status"], result["error"], result["cursor"]), ("blocked", "timeout", expected_cursor))
+        self.assertEqual(result["phase"], "need_question" if before["version"] == 1 else "discovery")
+        self.assertIsNone(result["question"])
+        self.assertIsNone(result["feedback"])
+        self.assertEqual(len(self.calls), count + 1)
+        if decisions is not None:
+            advanced = json.loads(self.snapshot().read_text())
+            self.assertEqual(advanced["search"]["offset"], before["search"]["offset"])
+            self.assertEqual(ledger.read_bytes(), decisions)
+        saved = self.snapshot().read_bytes()
+        self.assertEqual(self.send("skip")["error"], "skip_not_expected")
+        self.assertEqual(self.snapshot().read_bytes(), saved)
+        self.send("pause")
+        resumed = self.restart("resume")
+        self.assertEqual(
+            (resumed["phase"], resumed["cursor"], resumed["error"]),
+            (result["phase"], result["cursor"], result["error"]),
+        )
+        self.assertEqual(self.snapshot().read_bytes(), saved)
+        self.assertEqual(len(self.calls), count + 1)
+        self.failure = None
+        retried = self.restart("retry")
+        self.assertEqual((retried["phase"], retried["cursor"]), ("await_answer", current["cursor"] + 1))
+        self.assertEqual(retried["question"]["citation"]["heading"], "Cache two")
+        self.assertEqual(self.calls[-1], self.calls[-2])
+        if decisions is not None:
+            with closing(sqlite3.connect(ledger)) as connection:
+                self.assertEqual(connection.execute("SELECT COUNT(*) FROM decisions").fetchone()[0], 2)
+        self.assertEqual(self.send("finish")["status"], "finished")
+
+    def test_skip_invalid_phases_are_noops_before_source_checks(self):
+        self.start()
+        original = json.loads(self.snapshot().read_text())
+        self.send("answer", answer="synthetic answer")
+        states = [json.loads(self.snapshot().read_text())]
+        for status in ("paused", "finished"):
+            states.append({**original, "status": status, "paused_status": "active" if status == "paused" else None})
+        phases = (
+            ("need_question", "exhausted")
+            if original["version"] == 1
+            else ("indexing", "discovery", "expansion", "refused", "exhausted", "search_incomplete")
+        )
+        for phase in phases:
+            state = {**original, "phase": phase, "question": None, "feedback": None}
+            if state["version"] == 1:
+                state["cursor"] = state["total"] if phase == "exhausted" else 0
+            else:
+                state.update(source=None, chunk_id=None)
+                state["search"] = {
+                    **original["search"],
+                    "scan_complete": phase != "indexing",
+                    "expanded": phase == "expansion",
+                }
+                if phase == "refused":
+                    state["admitted"] = 0
+            states.append(state)
+        for state in states:
+            with self.subTest(phase=state["phase"], status=state["status"]):
+                validator = interview._validate if state["version"] == 1 else interview._validate_v2
+                validator(state, self.session_id)
+                self.snapshot().write_text(json.dumps(state))
+                saved = self.snapshot().read_bytes()
+                with (
+                    patch("interview._source", side_effect=AssertionError("Invalid skip must not read source")),
+                    patch("interview._topic_source", side_effect=AssertionError("Invalid skip must not read source")),
+                    patch("interview.chat", side_effect=AssertionError("Invalid skip must not infer")),
+                ):
+                    result = self.send("skip")
+                self.assertEqual((result["ok"], result["error"]), (False, "skip_not_expected"))
+                self.assertEqual(self.snapshot().read_bytes(), saved)
+        self.snapshot().write_text(json.dumps(original))
+        self.assertEqual(self.send("finish")["status"], "finished")
+
+    def test_skip_last_chunk_exhausts_without_assessment(self):
+        self.note.write_text("# Cache\nCache stores results.\n")
+        self.start()
+        count = len(self.calls)
+        result = self.send("skip")
+        self.assertEqual((result["phase"], result["status"]), ("exhausted", "active"))
+        self.assertIsNone(result["question"])
+        self.assertIsNone(result["feedback"])
+        self.assertIsNone(result["error"])
+        self.assertEqual(len(self.calls), count)
+        self.assertEqual(self.send("finish")["status"], "finished")
+
+    def test_free_text_admission_is_assessed_not_skipped(self):
+        for answer in ("I don't know.", "skip"):
+            with self.subTest(answer=answer):
+                current = self.start()
+                result = self.send("answer", answer=answer)
+                self.assertEqual((result["phase"], result["cursor"]), ("await_next", current["cursor"]))
+                self.assertEqual(self.calls[-1]["format"], interview.ASSESSMENT_SCHEMA)
+                self.assertEqual(json.loads(self.calls[-1]["messages"][-1]["content"])["answer"], answer)
+                self.assertEqual(self.send("finish")["status"], "finished")
+
+    def test_cli_skip_advances_and_finish_remains_available(self):
+        self.note.write_text("# Cache one\nCache stores results.\n# Cache two\nCache removes stale entries.\n")
+        current = self.start()
+        count = len(self.calls)
+        with (
+            patch("sys.argv", ["interview.py", "resume", self.session_id, "--state-dir", self.request["state_dir"]]),
+            patch("builtins.input", side_effect=[":skip", ":finish"]),
+            patch("builtins.print"),
+        ):
+            self.assertEqual(interview.main(), 0)
+        state = json.loads(self.snapshot().read_text())
+        self.assertEqual(
+            (state["status"], state["phase"], state["cursor"]), ("finished", "await_answer", current["cursor"] + 1)
+        )
+        self.assertEqual(len(self.calls), count + 1)
+        self.assertTrue(all(call["format"] != interview.ASSESSMENT_SCHEMA for call in self.calls))
+
     def test_full_flow_absolute_path_pause_resume_and_no_vault_writes(self):
         current = self.start(note=str(self.note))
         self.assertTrue(current["ok"])
@@ -443,6 +624,24 @@ class TopicInterviewTests(unittest.TestCase):
     start = InterviewTests.start
     send = InterviewTests.send
     snapshot = InterviewTests.snapshot
+    restart = InterviewTests.restart
+    test_skip_advances_once_without_assessment_or_answer_storage = (
+        InterviewTests.test_skip_advances_once_without_assessment_or_answer_storage
+    )
+    test_skip_recovers_from_echoed_short_answer_without_retry = (
+        InterviewTests.test_skip_recovers_from_echoed_short_answer_without_retry
+    )
+    test_skip_failure_preserves_advance_across_pause_and_restart = (
+        InterviewTests.test_skip_failure_preserves_advance_across_pause_and_restart
+    )
+    test_skip_invalid_phases_are_noops_before_source_checks = (
+        InterviewTests.test_skip_invalid_phases_are_noops_before_source_checks
+    )
+    test_skip_last_chunk_exhausts_without_assessment = InterviewTests.test_skip_last_chunk_exhausts_without_assessment
+    test_free_text_admission_is_assessed_not_skipped = InterviewTests.test_free_text_admission_is_assessed_not_skipped
+    test_cli_skip_advances_and_finish_remains_available = (
+        InterviewTests.test_cli_skip_advances_and_finish_remains_available
+    )
     test_escaped_answer_is_bounded_without_changing_saved_progress = (
         InterviewTests.test_escaped_answer_is_bounded_without_changing_saved_progress
     )
@@ -475,16 +674,6 @@ class TopicInterviewTests(unittest.TestCase):
                 return result
             result = self.send("retry")
         self.fail("Discovery did not finish within the fixture's bounded candidate set")
-
-    def restart(self, action, **fields):
-        # A fresh module has no controller memory; only private durable state.
-        spec = importlib.util.spec_from_file_location("interview_restarted", interview.__file__)
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        with patch.object(module, "chat", side_effect=self.model):
-            return module.dispatch(
-                {"session_id": self.session_id, "state_dir": self.request["state_dir"], "action": action, **fields}
-            )
 
     def admissions(self):
         return [
@@ -698,6 +887,32 @@ class TopicInterviewTests(unittest.TestCase):
         result = self.restart("next")
         self.assertEqual((result["phase"], result["admitted"]), ("search_incomplete", 1))
         self.assertEqual(len(self.admissions()), 32)
+        self.assertEqual(self.send("finish")["status"], "finished")
+
+    def test_skip_honors_candidate_cap_and_excluded_note_incompleteness(self):
+        self.note.write_text("".join(f"# Cache {index}\nCache value {index}.\n" for index in range(33)))
+        self.start()
+        for _ in range(31):
+            self.assertEqual(self.send("skip")["phase"], "await_answer")
+        with patch("interview.search_topic", side_effect=AssertionError("Cap must stop before search")):
+            result = self.send("skip")
+        self.assertEqual((result["phase"], result["cursor"]), ("search_incomplete", 32))
+        self.assertFalse(result["complete"])
+        self.assertEqual(len(self.admissions()), 32)
+        self.assertEqual(len(self.expansions()), 0)
+        self.assertTrue(all(call["format"] != interview.ASSESSMENT_SCHEMA for call in self.calls))
+        self.assertEqual(self.send("finish")["status"], "finished")
+
+        self.note.write_text("# Cache\nCache stores results.\n")
+        (self.vault / "bad.md").write_bytes(b"\xff")
+        self.start()
+        count = len(self.calls)
+        result = self.send("skip")
+        self.assertEqual((result["phase"], result["error"]), ("search_incomplete", "search_incomplete"))
+        self.assertFalse(result["complete"])
+        self.assertIn("excluded notes", result["message"])
+        self.assertIsNone(result["question"])
+        self.assertEqual(len(self.calls), count)
         self.assertEqual(self.send("finish")["status"], "finished")
 
     def test_scan_batches_pause_restart_progress_and_finish_without_model(self):
