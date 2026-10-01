@@ -59,7 +59,7 @@ LIMITS = {
     "max_response_bytes": 262144,
 }
 SCAN_BATCH = 4
-MAX_TOPIC_CANDIDATES = 32
+MAX_TOPIC_CANDIDATES = 64
 ADMISSION_SCHEMA = {
     "type": "object",
     "properties": {
@@ -676,7 +676,7 @@ def _topic_view(state, error=None, message=None):
         "refused": "Topic not found in the completed indexed search; indexed topic suggestions are listed below.",
         "exhausted": "No more supported chunks in this indexed search. Use :pause or :finish.",
         "search_incomplete": (
-            "Candidate budget reached (32 examined); search is incomplete, not proof of absence. "
+            "Candidate budget reached (64 examined); search is incomplete, not proof of absence. "
             "Use :pause, :finish or start a narrower topic; :retry cannot extend this budget."
             if state["cursor"] >= MAX_TOPIC_CANDIDATES
             else "Available candidates exhausted, but excluded notes make the search incomplete."

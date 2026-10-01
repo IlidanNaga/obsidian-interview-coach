@@ -798,7 +798,7 @@ class TopicInterviewTests(unittest.TestCase):
         self.note = self.note.rename(self.note.with_name("material.md"))
         self.note.write_text(
             "".join(
-                f"# {'Cache' if index < 3 else 'Broad'} {index}\nSynthetic material {index}.\n" for index in range(40)
+                f"# {'Cache' if index < 3 else 'Broad'} {index}\nSynthetic material {index}.\n" for index in range(72)
             )
         )
         self.terms = ["broad"]
@@ -811,34 +811,34 @@ class TopicInterviewTests(unittest.TestCase):
 
         with patch("interview.chat", side_effect=reject):
             result = self.start()
-            for _ in range(40):
-                if result["cursor"] == 31:
+            for _ in range(72):
+                if result["cursor"] == 63:
                     break
                 result = self.send("retry")
-            self.assertEqual(result["cursor"], 31)
-            self.assertEqual(len(self.admissions()), 31)
+            self.assertEqual(result["cursor"], 63)
+            self.assertEqual(len(self.admissions()), 63)
             before = json.loads(self.snapshot().read_text())
             save = interview._save
 
             def fail_boundary(directory, state):
-                if state["cursor"] == 32:
+                if state["cursor"] == 64:
                     raise interview.SessionError("persistence_failure")
                 return save(directory, state)
 
             with patch("interview._save", side_effect=fail_boundary):
                 self.assertEqual(self.send("retry")["error"], "persistence_failure")
-        self.assertEqual(len(self.admissions()), 32)
-        self.assertEqual(self.restart("resume")["cursor"], 31)
+        self.assertEqual(len(self.admissions()), 64)
+        self.assertEqual(self.restart("resume")["cursor"], 63)
         result = self.restart("retry")  # Replay the committed rejection, without inference.
         self.assertEqual((result["phase"], result["error"]), ("search_incomplete", "search_incomplete"))
-        self.assertEqual((result["cursor"], result["admitted"]), (32, 0))
+        self.assertEqual((result["cursor"], result["admitted"]), (64, 0))
         self.assertFalse(result["complete"])
         self.assertIsNone(result["question"])
         self.assertEqual(
             result["scan"], {key: before["search"][key] for key in ("done", "total", "excluded", "scan_complete")}
         )
         self.assertEqual(result["suggestions"], before["suggestions"])
-        self.assertIn("budget reached", result["message"])
+        self.assertIn("budget reached (64 examined)", result["message"])
         self.assertEqual(len(self.expansions()), 1)
         self.assertTrue(all(item["topic"] == "cache" for item in self.admissions()))
         saved = self.snapshot().read_bytes()
@@ -851,7 +851,7 @@ class TopicInterviewTests(unittest.TestCase):
         self.assertEqual(self.restart("retry")["error"], "search_incomplete")
         self.assertEqual(self.snapshot().read_bytes(), saved)
         self.assertEqual(ledger.read_bytes(), decisions)
-        self.assertEqual(len(self.admissions()), 32)
+        self.assertEqual(len(self.admissions()), 64)
         with (
             patch("sys.argv", ["interview.py", "resume", self.session_id, "--state-dir", self.request["state_dir"]]),
             patch("builtins.input", side_effect=[":finish"]),
@@ -861,44 +861,44 @@ class TopicInterviewTests(unittest.TestCase):
         self.assertEqual(self.restart("resume")["error"], "session_finished")
 
     def test_exact_candidate_boundary_is_incomplete_without_expansion(self):
-        self.note.write_text("".join(f"# Cache {index}\nCache value {index}.\n" for index in range(32)))
+        self.note.write_text("".join(f"# Cache {index}\nCache value {index}.\n" for index in range(64)))
         self.proposal = {"decision": "reject", "question": "", "quote": ""}
         result = self.settle(self.start())
-        self.assertEqual((result["cursor"], result["phase"]), (32, "search_incomplete"))
+        self.assertEqual((result["cursor"], result["phase"]), (64, "search_incomplete"))
         self.assertFalse(result["complete"])
         self.assertIsNone(result["question"])
-        self.assertEqual(len(self.admissions()), 32)
+        self.assertEqual(len(self.admissions()), 64)
         self.assertEqual(len(self.expansions()), 0)
 
     def test_admitted_boundary_question_can_be_answered_before_search_stops(self):
-        self.note.write_text("".join(f"# Cache {index}\nCache value {index}.\n" for index in range(33)))
+        self.note.write_text("".join(f"# Cache {index}\nCache value {index}.\n" for index in range(65)))
         self.proposal = {"decision": "reject", "question": "", "quote": ""}
         result = self.start()
-        for _ in range(30):
+        for _ in range(62):
             result = self.send("retry")
-        self.assertEqual(result["cursor"], 31)
+        self.assertEqual(result["cursor"], 63)
         self.proposal = None
         result = self.restart("retry")
-        self.assertEqual((result["cursor"], result["phase"]), (32, "await_answer"))
+        self.assertEqual((result["cursor"], result["phase"]), (64, "await_answer"))
         question = result["question"]
         self.send("pause")
         self.assertEqual(self.restart("resume")["question"], question)
         self.assertEqual(self.send("answer", answer="fixture answer")["phase"], "await_next")
         result = self.restart("next")
         self.assertEqual((result["phase"], result["admitted"]), ("search_incomplete", 1))
-        self.assertEqual(len(self.admissions()), 32)
+        self.assertEqual(len(self.admissions()), 64)
         self.assertEqual(self.send("finish")["status"], "finished")
 
     def test_skip_honors_candidate_cap_and_excluded_note_incompleteness(self):
-        self.note.write_text("".join(f"# Cache {index}\nCache value {index}.\n" for index in range(33)))
+        self.note.write_text("".join(f"# Cache {index}\nCache value {index}.\n" for index in range(65)))
         self.start()
-        for _ in range(31):
+        for _ in range(63):
             self.assertEqual(self.send("skip")["phase"], "await_answer")
         with patch("interview.search_topic", side_effect=AssertionError("Cap must stop before search")):
             result = self.send("skip")
-        self.assertEqual((result["phase"], result["cursor"]), ("search_incomplete", 32))
+        self.assertEqual((result["phase"], result["cursor"]), ("search_incomplete", 64))
         self.assertFalse(result["complete"])
-        self.assertEqual(len(self.admissions()), 32)
+        self.assertEqual(len(self.admissions()), 64)
         self.assertEqual(len(self.expansions()), 0)
         self.assertTrue(all(call["format"] != interview.ASSESSMENT_SCHEMA for call in self.calls))
         self.assertEqual(self.send("finish")["status"], "finished")
