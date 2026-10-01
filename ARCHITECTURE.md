@@ -1,15 +1,16 @@
 # Architecture
 
-The current implementation is one explicit-note controller with standard-library source loading, local transport and JSON snapshots. [BIBLE.md](BIBLE.md) defines the broader contract; topic discovery and whole-Vault coverage are still planned. Usage is in [README.md](README.md).
+The current implementation supports explicit-note and topic interviews with standard-library source loading, local transport and JSON snapshots. [BIBLE.md](BIBLE.md) defines the broader contract; whole-Vault coverage is still planned. Usage is in [README.md](README.md).
 
 ## Modules and flow
 
 | File | Current responsibility |
 | --- | --- |
-| [interview.py](interview.py) | `start_session(dict)` / `dispatch(dict)` return JSON-shaped results; deterministic controller, request construction, proposal validation, durable state and thin interactive CLI. |
+| [interview.py](interview.py) | `start_session(dict)` / `dispatch(dict)` return JSON-shaped results; deterministic note/topic controller, request construction, proposal validation, durable state and thin interactive CLI. |
 | [vault_source.py](vault_source.py) | `load_note(dict)` resolves/reads one contained UTF-8 Markdown file, identifies sections/chunks and source identity; `cite(chunk, quote)` derives validated references. Source failures raise classified `SourceError`. |
+| [topic_search.py](topic_search.py) | Private resumable SQLite FTS5 index, contained Vault inventory, candidate search and suggestions from actual notes. |
 | [ollama_smoke.py](ollama_smoke.py) | `chat(dict)` provides bounded Ollama transport; `smoke(dict)` checks structured output using a synthetic prompt; `--self-check` exercises mocked transport. |
-| [test_interview.py](test_interview.py) | Synthetic offline checks of controller transitions, source boundaries, citations and persistence; patches `interview.chat`. |
+| [test_interview.py](test_interview.py) / [test_topic_search.py](test_topic_search.py) | Synthetic offline checks of controller transitions, topic admission/refusal, source boundaries, indexing, citations and persistence. |
 | [AGENTS.md](AGENTS.md) / [BIBLE.md](BIBLE.md) | Working procedure / product invariants and delivery order. |
 | [.gitignore](.gitignore) | Backstop for local artifacts, not a publication/privacy guarantee. |
 
@@ -23,7 +24,9 @@ answer -> selected chunk + current question + ephemeral answer -> chat
        -> validated note-based feedback -> save result -> caller
 ```
 
-The controller selects the source, advances the cursor, enforces budgets and owns commands/recovery. The model supplies only a question and quote, or a feedback label/text and quote; extra fields are rejected. It cannot choose another file, execute tools, or grant permissions. Each inference sees one chunk; assessment also receives the current question and answer, without conversation history. Temperature zero is a transport setting, not a guarantee of model determinism or correctness.
+The controller selects the source, advances the cursor, enforces budgets and owns commands/recovery. The model supplies only a question and quote, a topic admission decision, retrieval terms, or a feedback label/text and quote; extra fields are rejected. It cannot choose another file, execute tools, or grant permissions. Question/admission and assessment inference see one chunk; assessment also receives the current question and answer, without conversation history. Query expansion sees only the topic. Temperature zero is a transport setting, not a guarantee of model determinism or correctness.
+
+In topic mode, the controller inventories and indexes Markdown notes outside the Vault. It uses FTS5 to select candidate chunks, then asks the local model whether the **original topic** is supported by each selected chunk. Only an admitted question with a valid exact quote becomes visible. A rejected or uncertain candidate advances search progress without a question. After feedback, `:next` seeks another supported chunk and may cross a note boundary. One successful query expansion follows if the literal query yields no admitted material; a failed call can be retried. Expansion terms only retrieve candidates and never grant access to paths. The index and a per-session decision ledger live in a private state directory. Full Vault coverage accounting remains separate work.
 
 ## Sources and citations
 
@@ -41,7 +44,7 @@ Requests are non-streaming, with `think=false`, temperature `0`, `num_ctx=4096`,
 
 ## Durable transitions and recovery
 
-State version 1 records source metadata, endpoint/model, limits, cursor/total, current question/feedback, error, status and phase. Status is `active`, `blocked`, `paused`, or `finished`; phase tracks work independently:
+State version 1 records explicit-note source metadata, endpoint/model, limits, cursor/total, current question/feedback, error, status and phase. Status is `active`, `blocked`, `paused`, or `finished`; phase tracks work independently:
 
 | Transition | Durable behavior |
 | --- | --- |
@@ -54,6 +57,8 @@ State version 1 records source metadata, endpoint/model, limits, cursor/total, c
 
 Exhaustion does not finish the session automatically. Pause/finish require readable valid state but neither the source nor the model. Model unavailability, timeouts, invalid output/citations and source changes block without advancing pending work. Changed source is not silently adopted: finish and start a new session. Oversized answers are rejected before transport, without truncation or a durable block. Interrupted requests leave the saved phase intact; resume and retry/re-enter the answer as appropriate.
 
+Topic sessions use a separate strict version-2 snapshot. Their phases include indexing, discovery, expansion, awaiting an answer/next command, refusal, incomplete search and exhaustion. Indexing commits one note at a time and exposes `done N/total`; a repeated start or saved ID can resume an unfinished scan. Candidate decisions are committed before the corresponding snapshot advances, so a crash can replay a decision without repeating an accepted question. The search index is frozen per session after indexing so ranked offsets do not move when another session scans the Vault. A complete refusal means no admitted chunk was found in the indexed candidate stream; excluded files produce `search_incomplete` instead. Neither result proves semantic absence from the user's knowledge.
+
 State storage must be outside the repository and Vault, user-owned and private. Operations take a nonblocking `fcntl` session lock (`session_busy` on collision). Snapshots use a private temporary file, file `fsync`, atomic replacement and directory `fsync`, with a 128-KiB size cap. Reads validate schema, ownership, permissions, regular-file/symlink constraints and size. Corrupt snapshots are refused without overwrite; persistence failures are reported, and recovery uses the last readable valid snapshot rather than assuming an in-memory result was saved. The tests cover preservation of an earlier snapshot when replacement fails.
 
 ## Privacy and trust boundaries
@@ -62,10 +67,9 @@ Vault text and answers are untrusted data. Prompts say so, while deterministic s
 
 Snapshots retain paths and derived content, including current questions, feedback and source quotes, but no raw answers/full transcript. Full-answer echoes in feedback are rejected case-insensitively; fragments/paraphrases are not comprehensively filtered. Errors use classified codes rather than note/answer text; CLI output intentionally displays the current question, feedback and source reference. Real Vaults and derived artifacts must remain outside Git, regardless of ignore rules.
 
-## Planned extensions: delivery steps 3–5
+## Planned extensions: delivery steps 4–5
 
-- **Step 3 — Topic discovery:** extend controller-owned source selection beyond an explicit note, with retrieval grounded in Vault text, absent-topic refusal and nearby topics linked to notes. No topic index/retrieval or refusal flow exists yet.
-- **Step 4 — Whole-Vault traversal:** extend source inventory and durable progress across eligible notes/sections, record covered/skipped sections with reasons and visit uncovered material before repeating. The current cursor covers only chunks of one immutable note; it is not a Vault coverage ledger.
+- **Step 4 — Whole-Vault traversal:** add durable coverage across eligible notes/sections, record covered/skipped sections with reasons and visit uncovered material before repeating. Topic-mode candidate progress is query-specific; it is not a Vault coverage ledger.
 - **Step 5 — Evaluation, then comparison:** evaluate usefulness, assessment interpretation, latency and peak memory on a small private sample; only then compare the same flow in an agent framework. The existing `chat(dict)` boundary and JSON controller are reuse points, not multiple implemented engines; the smoke helper supplies elapsed time/Ollama metrics but no peak-memory measurement or quality evaluation.
 
 Offline fixtures demonstrate mechanical behavior, not local model quality or hardware suitability; see [verification and limits](README.md#verification-and-limits).

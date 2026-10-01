@@ -42,6 +42,7 @@ from vault_source import SourceError, _identity, load_note
 
 REPO = Path(__file__).resolve().parent
 MAX_NOTE_BYTES = 8 * 1024 * 1024
+MAX_HEADING_BYTES = 8 * 1024
 CHUNK_FIELDS = ("id", "section_id", "path", "heading", "start_line", "end_line", "start_offset", "end_offset", "text")
 
 
@@ -300,7 +301,12 @@ def build_index(request: dict) -> dict:
                             continue
                         if error is None:
                             result = _bounded_note(vault, note, directory, limit, identity)
+                            if any(
+                                len(chunk["heading"].encode("utf-8")) > MAX_HEADING_BYTES for chunk in result["chunks"]
+                            ):
+                                raise SourceError("heading_too_large")
                     except SourceError as failure:
+                        result = None
                         error = failure.code
                     except (OSError, RuntimeError):
                         error = "invalid_source"
