@@ -37,7 +37,7 @@ METRIC_FIELDS = (
     "eval_duration",
 )
 MAX_RESPONSE_BYTES = 256 * 1024
-MAX_REQUEST_BYTES = 3072
+MAX_REQUEST_BYTES = 8192
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -112,6 +112,9 @@ def chat(request: dict[str, Any]) -> dict[str, Any]:
     try:
         if not isinstance(request, dict):
             raise ValueError("request must be an object")
+        request_limit = request.get("max_request_bytes", MAX_REQUEST_BYTES)
+        if type(request_limit) is not int or not 0 < request_limit <= MAX_REQUEST_BYTES:
+            raise ValueError("request limit must be positive and at most 8192 bytes")
         model = request.get("model", "qwen3.5:9b")
         if not isinstance(model, str) or not model.strip():
             raise ValueError("model must be a non-empty string")
@@ -149,8 +152,8 @@ def chat(request: dict[str, Any]) -> dict[str, Any]:
             allow_nan=False,
             separators=(",", ":"),
         ).encode("utf-8")
-        if len(body) > MAX_REQUEST_BYTES:
-            result["error"] = "request exceeds 3072 bytes"
+        if len(body) > request_limit:
+            result["error"] = f"request exceeds {request_limit} bytes"
             return result
         http_request = urllib.request.Request(
             url, data=body, headers={"Content-Type": "application/json"}, method="POST"
@@ -295,6 +298,10 @@ def self_check() -> None:
             {"timeout": float("nan")},
             {"messages": []},
             {"endpoint": "http://localhost:11434"},
+            {"max_request_bytes": MAX_REQUEST_BYTES + 1},
+            {"max_request_bytes": 0},
+            {"max_request_bytes": True},
+            {"max_request_bytes": 3072.0},
         ):
             opener.open.reset_mock()
             assert chat({**request, **change})["ok"] is False
@@ -303,14 +310,16 @@ def self_check() -> None:
         request["messages"][0]["content"] = ""
         body["messages"] = request["messages"]
         overhead = len(json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode())
-        request["messages"][0]["content"] = "\u00e9" + "x" * (MAX_REQUEST_BYTES - overhead - 2)
-        opener.open.return_value = io.BytesIO(json.dumps(payload).encode())
-        assert chat(request)["ok"] is True
-        assert len(opener.open.call_args.args[0].data) == MAX_REQUEST_BYTES
-        request["messages"][0]["content"] += "x"
-        opener.open.reset_mock()
-        assert chat(request)["error"] == "request exceeds 3072 bytes"
-        opener.open.assert_not_called()
+        for limit in (MAX_REQUEST_BYTES, 3072):
+            bounded = {**request, **({"max_request_bytes": limit} if limit == 3072 else {})}
+            request["messages"][0]["content"] = "\u00e9" + "x" * (limit - overhead - 2)
+            opener.open.return_value = io.BytesIO(json.dumps(payload).encode())
+            assert chat(bounded)["ok"] is True
+            assert len(opener.open.call_args.args[0].data) == limit
+            request["messages"][0]["content"] += "x"
+            opener.open.reset_mock()
+            assert chat(bounded)["error"] == f"request exceeds {limit} bytes"
+            opener.open.assert_not_called()
         opener.open.return_value = io.BytesIO(json.dumps(payload).encode())
         assert smoke({"endpoint": request["endpoint"]})["success"] is True
         opener.open.return_value = io.BytesIO(json.dumps({"done": True, "message": {"content": '{}'}}).encode())

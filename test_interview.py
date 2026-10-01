@@ -3,6 +3,7 @@
 from contextlib import closing
 import fcntl
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -12,6 +13,7 @@ import unittest
 from unittest.mock import patch
 
 import interview
+import ollama_smoke
 from vault_source import load_note
 
 
@@ -59,7 +61,7 @@ class InterviewTests(unittest.TestCase):
 
     def model(self, request):
         self.calls.append(request)
-        self.assertLessEqual(interview._body_size(request), 3072)
+        self.assertLessEqual(interview._body_size(request), request["max_request_bytes"])
         if self.failure:
             return {"ok": False, "content": None, "error": self.failure, "metrics": {}}
         if self.proposal is not None:
@@ -224,6 +226,72 @@ class InterviewTests(unittest.TestCase):
         self.assertEqual(len(self.calls), count)
         self.assertNotIn("PRIVATE-OVERSIZED", self.snapshot().read_text())
 
+    def test_escaped_answer_is_bounded_without_changing_saved_progress(self):
+        self.start()
+        saved = self.snapshot().read_bytes()
+        state = json.loads(saved)
+        chunk = {"text": json.loads(self.calls[-1]["messages"][-1]["content"])["source"]}
+        answer = "\0" * 2048
+        self.assertLess(len(answer.encode()), 8192)
+        self.assertGreater(interview._body_size(interview._request(state, chunk, answer)), 8192)
+        count = len(self.calls)
+        self.assertEqual(self.send("answer", answer=answer)["error"], "answer_too_large")
+        self.assertEqual(len(self.calls), count)
+        self.assertEqual(self.snapshot().read_bytes(), saved)
+
+    def test_legacy_snapshot_resumes_with_original_limits_and_progress(self):
+        self.note.write_text(
+            "# Cache\n" + "".join(f"Cache stores reusable results for retrieval {index}.\n" for index in range(30))
+        )
+        legacy_limits = {**interview.LIMITS, "max_request_bytes": 3072}
+        # Generate an old-format fixture with the original selection budget.
+        with patch.object(interview, "LIMITS", legacy_limits), patch.object(interview, "MAX_REQUEST_BYTES", 3072):
+            self.assertTrue(self.start()["ok"])
+            self.assertEqual(self.send("answer", answer="fixture answer")["phase"], "await_next")
+            self.assertEqual(self.send("next")["phase"], "await_answer")
+        state = json.loads(self.snapshot().read_text())
+        self.assertGreater(state["cursor"], 0)
+        self.assertEqual(state["limits"]["max_request_bytes"], 3072)
+        if state["version"] == 2:
+            self.assertEqual(state["limits"]["chunk_bytes"], 128)
+        private = self.snapshot().with_suffix(".search")
+        indexes = {path: path.read_bytes() for path in private.glob("*.sqlite3")}
+        count = len(self.calls)
+        self.send("pause")
+        self.assertTrue(self.send("resume")["ok"])
+        self.assertEqual(json.loads(self.snapshot().read_text()), state)
+        self.assertEqual({path: path.read_bytes() for path in indexes}, indexes)
+        self.assertEqual(len(self.calls), count)
+        chunk = {"text": json.loads(self.calls[-1]["messages"][-1]["content"])["source"]}
+        request = interview._request(state, chunk, "\0" * 512)
+        self.assertGreater(interview._body_size(request), 3072)
+        self.assertLessEqual(interview._body_size(request), 8192)
+        saved = self.snapshot().read_bytes()
+        self.assertEqual(self.send("answer", answer="\0" * 512)["error"], "answer_too_large")
+        self.assertEqual(len(self.calls), count)
+        self.assertEqual(self.snapshot().read_bytes(), saved)
+        if state["version"] == 2:
+            request = interview._topic_request(state, {"text": "\0" * 512})
+            with self.assertRaises(interview.SessionError) as error:
+                interview._topic_chat(request)
+            self.assertEqual(error.exception.code, "request_too_large")
+            self.assertEqual(len(self.calls), count)
+        self.assertEqual(self.send("answer", answer="fixture answer")["phase"], "await_next")
+        self.assertEqual(self.send("next")["phase"], "await_answer")
+        continued = json.loads(self.snapshot().read_text())
+        self.assertEqual(continued["limits"], state["limits"])
+        self.assertGreater(continued["cursor"], state["cursor"])
+        self.assertTrue(all(interview._body_size(call) <= 3072 for call in self.calls))
+        for call in self.calls:
+            payload = json.loads(call["messages"][-1]["content"])
+            self.assertLessEqual(len(payload["source"].encode()), state["limits"]["chunk_bytes"])
+        for cap in (True, 4096, 8193):
+            with self.subTest(cap=cap):
+                corrupt = {**continued, "limits": {**continued["limits"], "max_request_bytes": cap}}
+                self.snapshot().write_text(json.dumps(corrupt))
+                self.assertEqual(self.send("resume")["error"], "corrupt_state")
+        self.snapshot().write_text(json.dumps(continued))
+
     def test_private_atomic_snapshot_lock_and_persistence_failure(self):
         self.start()
         directory = Path(self.request["state_dir"])
@@ -375,6 +443,12 @@ class TopicInterviewTests(unittest.TestCase):
     start = InterviewTests.start
     send = InterviewTests.send
     snapshot = InterviewTests.snapshot
+    test_escaped_answer_is_bounded_without_changing_saved_progress = (
+        InterviewTests.test_escaped_answer_is_bounded_without_changing_saved_progress
+    )
+    test_legacy_snapshot_resumes_with_original_limits_and_progress = (
+        InterviewTests.test_legacy_snapshot_resumes_with_original_limits_and_progress
+    )
 
     def setUp(self):
         InterviewTests.setUp(self)
@@ -390,7 +464,7 @@ class TopicInterviewTests(unittest.TestCase):
                 result["content"]["decision"] = "admit"
             return result
         self.calls.append(request)
-        self.assertLessEqual(interview._body_size(request), 3072)
+        self.assertLessEqual(interview._body_size(request), request["max_request_bytes"])
         if self.failure:
             return {"ok": False, "error": self.failure}
         return {"ok": True, "content": self.proposal if self.proposal is not None else {"terms": self.terms}}
@@ -759,7 +833,7 @@ class TopicInterviewTests(unittest.TestCase):
 
     def test_long_heading_admits_and_oversized_heading_is_incomplete(self):
         self.note.write_text("# Cache " + "x" * 251 + "\nCache stores values.\n")
-        self.proposal = {"decision": "admit", "question": "What is cached?", "quote": "Cache"}
+        self.proposal = {"decision": "admit", "question": "What is cached?", "quote": "# Cache"}
         self.assertEqual(self.start()["outcome"], "admitted")
         self.assertGreater(len(self.send("pause")["question"]["citation"]["heading"]), 256)
         self.send("finish")
@@ -916,7 +990,38 @@ class TopicInterviewTests(unittest.TestCase):
         result = self.settle(result)
         self.assertEqual(result["outcome"], "admitted")
         self.assertEqual(self.send("answer", answer="é" * 128)["phase"], "await_next")
-        self.assertTrue(all(interview._body_size(call) <= 3072 for call in self.calls))
+        self.assertTrue(all(interview._body_size(call) <= 8192 for call in self.calls))
+
+    def test_new_rag_topic_keeps_512_byte_chunks_and_complete_bodies_fit(self):
+        self.note.write_text(
+            "# Retrieval augmented generation\n"
+            + "".join(
+                f"Retrieval augmented generation grounds answer {index} in selected source passages.\n"
+                for index in range(20)
+            )
+        )
+        result = self.start(topic="retrieval augmented generation")
+        self.assertEqual(result["outcome"], "admitted")
+        state = json.loads(self.snapshot().read_text())
+        self.assertEqual(state["limits"]["chunk_bytes"], 512)
+        self.assertEqual(state["limits"]["max_request_bytes"], 8192)
+        self.assertGreater(len(self.admissions()[0]["source"].encode()), 128)
+        self.assertEqual(
+            self.send("answer", answer="Retrieve relevant passages to ground the answer.")["phase"], "await_next"
+        )
+        probe = {**state, "question": {"text": "x" * 256}}
+        worst_chunk = {"text": "\0" * 512}
+        requests = self.calls + [
+            interview._topic_request(state, worst_chunk),
+            interview._request(probe, worst_chunk, "x" * 256),
+        ]
+        for request in requests:
+            with patch("ollama_smoke.urllib.request.build_opener") as build:
+                build.return_value.open.return_value = io.BytesIO(b'{"done":true,"message":{"content":"{}"}}')
+                self.assertTrue(ollama_smoke.chat(request)["ok"])
+                sent = build.return_value.open.call_args.args[0].data
+                self.assertEqual(len(sent), interview._body_size(request))
+                self.assertLessEqual(len(sent), 8192)
 
 
 if __name__ == "__main__":

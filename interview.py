@@ -21,13 +21,12 @@ import tempfile
 import urllib.parse
 import uuid
 
-from ollama_smoke import chat
+from ollama_smoke import MAX_REQUEST_BYTES, chat
 from topic_search import _bounded_note, build_index, search_topic
 from vault_source import SourceError, _identity, cite, load_note
 
 REPO = Path(__file__).resolve().parent
 DEFAULT_STATE_DIR = Path.home() / "Library/Application Support/ObsidianInterviewCoach/sessions"
-MAX_REQUEST_BYTES = 3072
 LABELS = ("supported", "partial", "not_supported", "uncertain")
 QUESTION_SCHEMA = {
     "type": "object",
@@ -52,7 +51,13 @@ SYSTEM = (
     "For assessment, compare with the note, never give an objective grade; "
     "use uncertain if unsure. Do not quote the answer."
 )
-LIMITS = {"timeout": 120, "num_ctx": 4096, "num_predict": 256, "max_request_bytes": 3072, "max_response_bytes": 262144}
+LIMITS = {
+    "timeout": 120,
+    "num_ctx": 4096,
+    "num_predict": 256,
+    "max_request_bytes": MAX_REQUEST_BYTES,
+    "max_response_bytes": 262144,
+}
 SCAN_BATCH = 4
 ADMISSION_SCHEMA = {
     "type": "object",
@@ -256,7 +261,13 @@ def _validate(state, session_id):
             or not all(type(value) is int and value >= 0 for value in source["identity"].values())
             or not isinstance(limits, dict)
             or set(limits) != {*LIMITS, "chunk_bytes"}
-            or any(type(limits[key]) is not int or limits[key] != value for key, value in LIMITS.items())
+            or any(
+                type(limits[key]) is not int or limits[key] != value
+                for key, value in LIMITS.items()
+                if key != "max_request_bytes"
+            )
+            or type(limits["max_request_bytes"]) is not int
+            or limits["max_request_bytes"] not in {3072, MAX_REQUEST_BYTES}
             or type(limits["chunk_bytes"]) is not int
             or not 4 <= limits["chunk_bytes"] <= 512
             or not isinstance(state["model"], str)
@@ -306,7 +317,7 @@ def _topic(value):
 
 
 def _validate_v2(state, session_id):
-    """Validate topic snapshots separately; the v1 validator stays unchanged."""
+    """Validate topic snapshots separately, preserving the v1 schema."""
     try:
         if not isinstance(state, dict) or set(state) != {
             "version",
@@ -345,8 +356,12 @@ def _validate_v2(state, session_id):
             or not isinstance(state["limits"], dict)
             or set(state["limits"]) != {*LIMITS, "chunk_bytes"}
             or any(
-                type(state["limits"][key]) is not int or state["limits"][key] != value for key, value in LIMITS.items()
+                type(state["limits"][key]) is not int or state["limits"][key] != value
+                for key, value in LIMITS.items()
+                if key != "max_request_bytes"
             )
+            or type(state["limits"]["max_request_bytes"]) is not int
+            or state["limits"]["max_request_bytes"] not in {3072, MAX_REQUEST_BYTES}
             or type(state["limits"]["chunk_bytes"]) is not int
             or not 4 <= state["limits"]["chunk_bytes"] <= 512
             or any(type(state[key]) is not int for key in ("cursor", "total", "admitted"))
@@ -521,6 +536,7 @@ def _request(state, chunk, answer=None):
         "endpoint": state["endpoint"],
         "model": state["model"],
         "timeout": 120,
+        "max_request_bytes": state["limits"]["max_request_bytes"],
         "messages": [{"role": "system", "content": SYSTEM}, {"role": "user", "content": _json(payload)}],
         "format": QUESTION_SCHEMA if answer is None else ASSESSMENT_SCHEMA,
     }
@@ -571,7 +587,7 @@ def _source(state, directory=None):
 
 def _infer(directory, state, chunk, answer=None):
     request = _request(state, chunk, answer)
-    if _body_size(request) > MAX_REQUEST_BYTES:
+    if _body_size(request) > state["limits"]["max_request_bytes"]:
         return _view(
             state,
             "answer_too_large" if answer is not None else "request_too_large",
@@ -590,7 +606,7 @@ def _infer(directory, state, chunk, answer=None):
                 "model unavailable": "model_unavailable",
                 "ollama is unavailable": "model_unavailable",
                 "ollama request timed out": "timeout",
-                "request exceeds 3072 bytes": "request_too_large",
+                f"request exceeds {request['max_request_bytes']} bytes": "request_too_large",
                 "ollama response exceeds 256 KiB": "response_too_large",
             }.get(error, "invalid_output")
             return _block(directory, state, classification)
@@ -787,6 +803,7 @@ def _topic_request(state, chunk=None):
         "endpoint": state["endpoint"],
         "model": state["model"],
         "timeout": 120,
+        "max_request_bytes": state["limits"]["max_request_bytes"],
         "messages": [
             {"role": "system", "content": EXPANSION_SYSTEM if chunk is None else TOPIC_SYSTEM},
             {
@@ -799,7 +816,7 @@ def _topic_request(state, chunk=None):
 
 
 def _topic_chat(request):
-    if _body_size(request) > MAX_REQUEST_BYTES:
+    if _body_size(request) > request["max_request_bytes"]:
         raise SessionError("request_too_large")
     try:
         result = chat(request)
@@ -816,7 +833,7 @@ def _topic_chat(request):
                 "model unavailable": "model_unavailable",
                 "ollama is unavailable": "model_unavailable",
                 "ollama request timed out": "timeout",
-                "request exceeds 3072 bytes": "request_too_large",
+                f"request exceeds {request['max_request_bytes']} bytes": "request_too_large",
                 "ollama response exceeds 256 KiB": "response_too_large",
             }.get(error, "invalid_output")
         )

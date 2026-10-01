@@ -64,6 +64,8 @@ pyenv exec python interview.py resume "$OIC_SESSION_ID"
 
 Paste the ID when `read` waits for input. If you used `--state-dir` at start, pass the same option on resume. Source changes block continuation; finish that session and start a new one for the changed note. After interruption, resume with the ID and use `:retry` if a question or discovery step is pending; answers may need re-entry. Repeating the same topic `start` command resumes an unfinished index scan. Exhaustion leaves the session open until pause or finish.
 
+Resume older sessions by their saved ID: v1/v2 snapshots retain their original 3072-byte request cap, chunk size, cursor, questions and topic index. New sessions use 8192 bytes; starting again with the new limits does not upgrade an old index/session.
+
 ## Python / Jupyter
 
 From a Python process or notebook with the repository on its import path, pass dictionaries and receive dictionaries; the CLI alone renders prose.
@@ -133,4 +135,6 @@ pyenv exec python ollama_smoke.py \
   --endpoint "http://127.0.0.1:11434" --model "qwen3.5:9b" --timeout 120
 ```
 
-The live smoke reports elapsed time and available Ollama timing/token metrics, not peak memory or interview quality. Offline checks do not establish real model usability, citation interpretation, latency, or Mac memory use; those need local live/manual verification. Source requests are bounded; explicit-note mode still reads the complete selected note into memory. Topic indexing excludes notes above 8 MiB and reports the search as incomplete if any notes were excluded.
+New sessions bound the complete serialized HTTP request body, including schema and options, to 8192 bytes in both controller and transport. The previous 3072-byte cap forced topic mode's worst-case escaping probe to choose 128-byte source chunks, reducing the context available for grounded questions. Synthetic checks confirm that ordinary new topics now keep a 512-byte chunk limit, including the worst-case source escaping reservation. Long or heavily escaped topics/models can still require smaller chunks; oversized answers are rejected without truncation or loss of saved progress.
+
+The live smoke reports elapsed time and available Ollama timing/token metrics, not peak memory or interview quality. Offline checks do not establish real model usability, citation interpretation, latency, or Mac memory use; the increased request cap and its effect on question quality need local live/manual verification. Source requests are bounded; explicit-note mode still reads the complete selected note into memory. Topic indexing excludes notes above 8 MiB and reports the search as incomplete if any notes were excluded.
