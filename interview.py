@@ -59,6 +59,7 @@ LIMITS = {
     "max_response_bytes": 262144,
 }
 SCAN_BATCH = 4
+MAX_TOPIC_CANDIDATES = 32
 ADMISSION_SCHEMA = {
     "type": "object",
     "properties": {
@@ -670,7 +671,12 @@ def _topic_view(state, error=None, message=None):
         "await_next": "Feedback compares with the notes, not an objective grade. Use :next, :pause or :finish.",
         "refused": "Topic not found in the completed indexed search; indexed topic suggestions are listed below.",
         "exhausted": "No more supported chunks in this indexed search. Use :pause or :finish.",
-        "search_incomplete": "Available candidates exhausted, but excluded notes make the search incomplete.",
+        "search_incomplete": (
+            "Candidate budget reached (32 examined); search is incomplete, not proof of absence. "
+            "Use :pause, :finish or start a narrower topic; :retry cannot extend this budget."
+            if state["cursor"] >= MAX_TOPIC_CANDIDATES
+            else "Available candidates exhausted, but excluded notes make the search incomplete."
+        ),
     }
     terminal_error = {"refused": "topic_not_found", "search_incomplete": "search_incomplete"}.get(phase)
     if state["status"] in {"blocked", "paused", "finished"}:
@@ -698,7 +704,7 @@ def _topic_view(state, error=None, message=None):
         "error": effective_error,
         "message": message or messages[phase],
         "scan": {key: search[key] for key in ("done", "total", "excluded", "scan_complete")},
-        "complete": search["scan_complete"] and search["excluded"] == 0,
+        "complete": search["scan_complete"] and search["excluded"] == 0 and phase != "search_incomplete",
         "suggestions": state["suggestions"] if phase in {"refused", "search_incomplete"} else [],
     }
 
@@ -907,7 +913,7 @@ def _expand(directory, state, private):
 def _topic_end(directory, state):
     search = state["search"]
     phase = "exhausted" if state["admitted"] else "refused"
-    if search["excluded"]:
+    if search["excluded"] or state["cursor"] >= MAX_TOPIC_CANDIDATES:
         phase = "search_incomplete"
     state.update(phase=phase, source=None, chunk_id=None, question=None, feedback=None)
     _save(directory, state)
@@ -916,6 +922,8 @@ def _topic_end(directory, state):
 
 def _discover(directory, state):
     try:
+        if state["cursor"] >= MAX_TOPIC_CANDIDATES:
+            return _topic_end(directory, state)
         private = _topic_directory(directory, state)
         search = state["search"]
         base = {"vault": state["vault"], "state_dir": str(private)}
@@ -1008,6 +1016,8 @@ def _discover(directory, state):
             state.update(source=None, chunk_id=None)
         else:
             state.update(question=question, phase="await_answer", admitted=state["admitted"] + 1)
+        if question is None and state["cursor"] >= MAX_TOPIC_CANDIDATES:
+            return _topic_end(directory, state)
         _save(directory, state)
         return _view(state)
     except (SourceError, SessionError) as error:
@@ -1123,6 +1133,8 @@ def _dispatch_topic(directory, state, request):
             _save(directory, state)
         return _view(state)
     if action == "retry":
+        if state["phase"] == "search_incomplete" and state["cursor"] >= MAX_TOPIC_CANDIDATES:
+            return _view(state)
         if state["status"] != "blocked" and state["phase"] not in {"indexing", "discovery", "expansion"}:
             return _view(state, "retry_not_needed")
         state.update(status="active", error=None)

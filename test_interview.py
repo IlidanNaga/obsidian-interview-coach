@@ -591,6 +591,7 @@ class TopicInterviewTests(unittest.TestCase):
         self.assertTrue(result["complete"])
         self.assertIsNone(result["question"])
         self.assertEqual(len(self.admissions()), 0)
+        self.assertEqual(result["cursor"], 0)
         self.assertEqual(len(self.expansions()), 1)
         self.assertNotIn("nearby", result["message"].lower())
         self.assertEqual(
@@ -602,6 +603,101 @@ class TopicInterviewTests(unittest.TestCase):
         self.assertTrue(any(call.args[0].startswith("Indexed topic:") for call in printed.call_args_list))
         self.assertEqual(self.send("pause")["status"], "paused")
         self.assertEqual(self.send("resume")["error"], "topic_not_found")
+        self.assertEqual(self.send("finish")["status"], "finished")
+
+    def test_expanded_candidate_budget_replays_boundary_and_survives_restart(self):
+        self.note = self.note.rename(self.note.with_name("material.md"))
+        self.note.write_text(
+            "".join(
+                f"# {'Cache' if index < 3 else 'Broad'} {index}\nSynthetic material {index}.\n" for index in range(40)
+            )
+        )
+        self.terms = ["broad"]
+
+        def reject(request):
+            result = self.model(request)
+            if "decision" in request["format"]["properties"]:
+                result["content"] = {"decision": "reject", "question": "", "quote": ""}
+            return result
+
+        with patch("interview.chat", side_effect=reject):
+            result = self.start()
+            for _ in range(40):
+                if result["cursor"] == 31:
+                    break
+                result = self.send("retry")
+            self.assertEqual(result["cursor"], 31)
+            self.assertEqual(len(self.admissions()), 31)
+            before = json.loads(self.snapshot().read_text())
+            save = interview._save
+
+            def fail_boundary(directory, state):
+                if state["cursor"] == 32:
+                    raise interview.SessionError("persistence_failure")
+                return save(directory, state)
+
+            with patch("interview._save", side_effect=fail_boundary):
+                self.assertEqual(self.send("retry")["error"], "persistence_failure")
+        self.assertEqual(len(self.admissions()), 32)
+        self.assertEqual(self.restart("resume")["cursor"], 31)
+        result = self.restart("retry")  # Replay the committed rejection, without inference.
+        self.assertEqual((result["phase"], result["error"]), ("search_incomplete", "search_incomplete"))
+        self.assertEqual((result["cursor"], result["admitted"]), (32, 0))
+        self.assertFalse(result["complete"])
+        self.assertIsNone(result["question"])
+        self.assertEqual(
+            result["scan"], {key: before["search"][key] for key in ("done", "total", "excluded", "scan_complete")}
+        )
+        self.assertEqual(result["suggestions"], before["suggestions"])
+        self.assertIn("budget reached", result["message"])
+        self.assertEqual(len(self.expansions()), 1)
+        self.assertTrue(all(item["topic"] == "cache" for item in self.admissions()))
+        saved = self.snapshot().read_bytes()
+        ledger = self.snapshot().with_suffix(".search") / "decisions.sqlite3"
+        decisions = ledger.read_bytes()
+        with patch("interview.search_topic", side_effect=AssertionError("Budget must stop before search")):
+            self.assertEqual(self.send("retry")["error"], "search_incomplete")
+        self.assertEqual(self.restart("pause")["status"], "paused")
+        self.assertEqual(self.restart("resume")["error"], "search_incomplete")
+        self.assertEqual(self.restart("retry")["error"], "search_incomplete")
+        self.assertEqual(self.snapshot().read_bytes(), saved)
+        self.assertEqual(ledger.read_bytes(), decisions)
+        self.assertEqual(len(self.admissions()), 32)
+        with (
+            patch("sys.argv", ["interview.py", "resume", self.session_id, "--state-dir", self.request["state_dir"]]),
+            patch("builtins.input", side_effect=[":finish"]),
+            patch("builtins.print"),
+        ):
+            self.assertEqual(interview.main(), 0)
+        self.assertEqual(self.restart("resume")["error"], "session_finished")
+
+    def test_exact_candidate_boundary_is_incomplete_without_expansion(self):
+        self.note.write_text("".join(f"# Cache {index}\nCache value {index}.\n" for index in range(32)))
+        self.proposal = {"decision": "reject", "question": "", "quote": ""}
+        result = self.settle(self.start())
+        self.assertEqual((result["cursor"], result["phase"]), (32, "search_incomplete"))
+        self.assertFalse(result["complete"])
+        self.assertIsNone(result["question"])
+        self.assertEqual(len(self.admissions()), 32)
+        self.assertEqual(len(self.expansions()), 0)
+
+    def test_admitted_boundary_question_can_be_answered_before_search_stops(self):
+        self.note.write_text("".join(f"# Cache {index}\nCache value {index}.\n" for index in range(33)))
+        self.proposal = {"decision": "reject", "question": "", "quote": ""}
+        result = self.start()
+        for _ in range(30):
+            result = self.send("retry")
+        self.assertEqual(result["cursor"], 31)
+        self.proposal = None
+        result = self.restart("retry")
+        self.assertEqual((result["cursor"], result["phase"]), (32, "await_answer"))
+        question = result["question"]
+        self.send("pause")
+        self.assertEqual(self.restart("resume")["question"], question)
+        self.assertEqual(self.send("answer", answer="fixture answer")["phase"], "await_next")
+        result = self.restart("next")
+        self.assertEqual((result["phase"], result["admitted"]), ("search_incomplete", 1))
+        self.assertEqual(len(self.admissions()), 32)
         self.assertEqual(self.send("finish")["status"], "finished")
 
     def test_scan_batches_pause_restart_progress_and_finish_without_model(self):
@@ -659,6 +755,8 @@ class TopicInterviewTests(unittest.TestCase):
         self.assertFalse(result["complete"])
         self.assertEqual(result["scan"]["excluded"], 1)
         self.assertTrue(result["suggestions"])
+        self.assertIn("excluded notes", result["message"])
+        self.assertNotIn("budget reached", result["message"])
 
     def test_interrupted_scan_retries_and_missing_index_blocks(self):
         build = interview.build_index

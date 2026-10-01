@@ -44,6 +44,8 @@ pyenv exec python interview.py start \
 
 Topic mode inventories readable Markdown notes in small batches, indexes them privately, searches for candidates, and asks the local model to admit each candidate against the original topic. The first result may say discovery is pending; enter `:retry` to continue. The CLI prints `done N/total` while indexing. A rejected or uncertain candidate produces no question. After feedback, `:next` searches for another supported chunk, including in a different note. There is no required number of questions. An absent-topic result includes suggestions drawn from indexed headings and paths; excluded or unreadable notes cause a distinct `search_incomplete` result instead of a complete refusal.
 
+Each topic session examines at most 32 candidates across literal and expanded queries, including visits deduplicated by the saved decision ledger. Reaching that ceiling returns `search_incomplete` with a candidate-budget message and `complete: false`, not a claim that the topic is absent; excluded-note incompleteness has a separate message. Pause/resume and `:retry` preserve progress and cannot extend the ceiling. You can answer a supported 32nd candidate before further discovery stops, use `:finish`, or start a narrower topic. A complete search with zero exclusions that runs out before 32 can still refuse; reaching exactly 32 conservatively remains incomplete.
+
 The note path may be Vault-relative or absolute, but must resolve inside the Vault. Only explicit HTTP loopback addresses with a port are accepted: `127.0.0.1` or `[::1]`; `localhost` is rejected.
 
 Enter an answer at `>`, or use a command:
@@ -136,5 +138,7 @@ pyenv exec python ollama_smoke.py \
 ```
 
 New sessions bound the complete serialized HTTP request body, including schema and options, to 8192 bytes in both controller and transport. The previous 3072-byte cap forced topic mode's worst-case escaping probe to choose 128-byte source chunks, reducing the context available for grounded questions. Synthetic checks confirm that ordinary new topics now keep a 512-byte chunk limit, including the worst-case source escaping reservation. Long or heavily escaped topics/models can still require smaller chunks; oversized answers are rejected without truncation or loss of saved progress.
+
+Topic discovery's cost ceiling is 32 examined candidates and at most 32 successful admission decisions, plus one successful query expansion. Failed-call retries and answer assessments are separate calls; indexing still inventories eligible notes. Offline tests cover the candidate ceiling and durable boundary recovery, not live inference latency or Mac memory use.
 
 The live smoke reports elapsed time and available Ollama timing/token metrics, not peak memory or interview quality. Offline checks do not establish real model usability, citation interpretation, latency, or Mac memory use; the increased request cap and its effect on question quality need local live/manual verification. Source requests are bounded; explicit-note mode still reads the complete selected note into memory. Topic indexing excludes notes above 8 MiB and reports the search as incomplete if any notes were excluded.
