@@ -1,0 +1,707 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <meta name="referrer" content="no-referrer">
+  <title>Интервью по заметкам</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #faf9f6; --surface: #fffefa; --soft: #efeee8;
+      --text: #272c28; --muted: #62685f; --line: #d7d9cf;
+      --primary: #344d41; --on-primary: #fff; --error: #934331;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 16px; line-height: 1.55;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #1b1c1e; --surface: #222528; --soft: #2b2e30;
+        --text: #eeeee7; --muted: #b4bab1; --line: #484d47;
+        --primary: #a7c6b1; --on-primary: #1b2a21; --error: #edaa97;
+      }
+    }
+    * { box-sizing: border-box; }
+    [hidden] { display: none !important; }
+    body { margin: 0; background: var(--bg); color: var(--text); }
+    main { width: min(100% - 40px, 750px); margin: 0 auto; padding: 32px 0 64px; }
+    header { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding-bottom: 24px; border-bottom: 1px solid var(--line); }
+    .brand { font-weight: 650; font-size: 1rem; }
+    h1 { font-size: clamp(1.7rem, 5vw, 2.3rem); line-height: 1.2; letter-spacing: -.025em; margin: 0 0 16px; }
+    h2 { font-size: 1.1rem; margin: 0 0 12px; }
+    p { margin: 0 0 16px; }
+    section { padding-top: 32px; }
+    .muted, .source-meta, small { color: var(--muted); }
+    .eyebrow { color: var(--muted); font-size: .85rem; margin-bottom: 12px; }
+    .wrap { overflow-wrap: anywhere; }
+    .preserve { white-space: pre-wrap; overflow-wrap: anywhere; }
+    label { display: block; font-size: .9rem; font-weight: 600; margin-bottom: 6px; }
+    input, textarea, select, button { font: inherit; }
+    input, textarea, select { width: 100%; min-width: 0; color: var(--text); background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 11px 13px; }
+    textarea { resize: vertical; min-height: 180px; line-height: 1.6; }
+    input:focus-visible, textarea:focus-visible, select:focus-visible, button:focus-visible, summary:focus-visible, h1:focus-visible {
+      outline: 3px solid var(--primary); outline-offset: 3px;
+    }
+    button { border: 1px solid var(--line); border-radius: 8px; background: transparent; color: var(--text); min-height: 44px; padding: 9px 17px; cursor: pointer; }
+    button:hover:not(:disabled) { background: var(--soft); }
+    button.primary { background: var(--primary); border-color: var(--primary); color: var(--on-primary); font-weight: 600; }
+    button.primary:hover:not(:disabled) { filter: brightness(.94); background: var(--primary); }
+    button:disabled { opacity: .5; cursor: default; }
+    .actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+    .header-actions { gap: 8px; }
+    .field { margin-bottom: 20px; }
+    .connection { margin: 24px 0; }
+    .connection summary { cursor: pointer; color: var(--muted); }
+    .connection-fields { padding-top: 16px; display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    .connection-fields .field { margin: 0; }
+    .mode { display: flex; flex-wrap: wrap; gap: 16px; border: 0; padding: 0; margin: 0 0 16px; }
+    .mode legend { font-weight: 600; font-size: .9rem; margin-bottom: 8px; }
+    .mode label { display: flex; gap: 8px; align-items: center; margin: 0; font-weight: 400; min-height: 36px; }
+    .mode input { width: auto; accent-color: var(--primary); }
+    .notice { background: var(--soft); border-radius: 8px; padding: 16px; margin-top: 20px; }
+    .notice p:last-child { margin-bottom: 0; }
+    #request-error { color: var(--error); }
+    #request-error .actions, #busy-notice .actions { margin-top: 12px; }
+    #status { margin: 24px 0 0; color: var(--muted); min-height: 1.55em; }
+    #question-text { font-size: clamp(1.2rem, 4vw, 1.5rem); line-height: 1.5; margin-bottom: 26px; }
+    .answer-help { display: block; margin-top: 8px; font-size: .8rem; }
+    .hint { background: var(--soft); border-radius: 8px; padding: 16px 20px; margin-top: 24px; }
+    .hint summary { cursor: pointer; font-size: .95rem; }
+    #hint-path { display: block; margin: 5px 0 0 26px; font-size: .8rem; color: var(--muted); font-weight: 400; overflow-wrap: anywhere; }
+    .bulb { margin-right: 7px; }
+    .source { margin-top: 14px; }
+    .source-meta { font-size: .85rem; }
+    .source-meta p { margin: 0 0 4px; }
+    blockquote { margin: 12px 0 0; padding-left: 16px; border-left: 2px solid var(--line); }
+    #feedback { border-top: 1px solid var(--line); margin-top: 32px; padding-top: 24px; }
+    #feedback-label { font-size: .9rem; font-weight: 650; margin-bottom: 10px; }
+    #submitted { margin-bottom: 24px; }
+    #submitted h3 { font-size: .9rem; margin: 0 0 8px; color: var(--muted); }
+    #feedback .actions { margin-top: 24px; }
+    #recovery { margin-top: 24px; }
+    #outcome { padding-top: 24px; }
+    #suggestions { list-style: none; padding: 0; margin: 20px 0; }
+    #suggestions li { margin-bottom: 12px; }
+    #suggestions button { text-align: left; width: 100%; }
+    #suggestions small { display: block; font-weight: 400; }
+    #saved { border-top: 1px solid var(--line); margin-top: 40px; padding-top: 24px; }
+    #saved .actions { margin-top: 12px; }
+    #saved-help { display: block; margin-top: 12px; font-size: .85rem; }
+    @media (max-width: 480px) {
+      main { width: calc(100% - 32px); padding-top: 20px; }
+      header { flex-wrap: wrap; gap: 12px; }
+      .header-actions { width: 100%; }
+      .header-actions button { flex: 1; padding-inline: 10px; }
+      .connection-fields { grid-template-columns: 1fr; }
+      .hint { padding: 14px; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <span class="brand">Интервью по заметкам</span>
+      <div class="actions header-actions" id="session-controls" hidden>
+        <button type="button" id="pause">Пауза</button>
+        <button type="button" id="finish">Завершить</button>
+      </div>
+    </header>
+
+    <div id="request-error" class="notice" role="alert" hidden>
+      <p id="error-text" class="wrap"></p>
+      <div class="actions">
+        <button type="button" id="reconnect" hidden>Восстановить связь</button>
+        <button type="button" id="dismiss-error" hidden>Закрыть сообщение</button>
+      </div>
+    </div>
+    <div id="busy-notice" class="notice" role="status" hidden>
+      <p>Выполняется другой запрос. Новый запрос не добавлен в очередь.</p>
+      <div class="actions"><button type="button" id="open-active">Открыть активное интервью</button></div>
+    </div>
+    <p id="status" role="status" aria-live="polite" aria-atomic="true">Подключаемся к локальному серверу…</p>
+
+    <section id="setup">
+      <h1 id="setup-title" tabindex="-1">Что потренируем?</h1>
+      <p class="muted">Выберите тему или заметку в своём Obsidian Vault.</p>
+      <form id="start-form" autocomplete="off">
+        <div class="field">
+          <label for="vault">Путь к Vault</label>
+          <input id="vault" name="vault" type="text" required spellcheck="false" autocapitalize="none" aria-describedby="vault-help">
+          <small id="vault-help">Полный путь к папке на этом компьютере. Заметки остаются без изменений.</small>
+        </div>
+        <fieldset class="mode">
+          <legend>Материал для интервью</legend>
+          <label><input type="radio" name="mode" value="topic" checked>Тема</label>
+          <label><input type="radio" name="mode" value="note">Заметка Markdown</label>
+        </fieldset>
+        <div class="field" id="topic-field">
+          <label for="topic">Тема</label>
+          <input id="topic" name="topic" type="text" required>
+        </div>
+        <div class="field" id="note-field" hidden>
+          <label for="note">Путь к заметке внутри Vault</label>
+          <input id="note" name="note" type="text" spellcheck="false" autocapitalize="none" disabled>
+        </div>
+        <details class="connection">
+          <summary>Подключение к локальной модели</summary>
+          <div class="connection-fields">
+            <div class="field"><label for="endpoint">Локальный адрес Ollama</label><input id="endpoint" type="url" required spellcheck="false" autocapitalize="none" aria-describedby="endpoint-help"></div>
+            <div class="field"><label for="model">Модель</label><input id="model" type="text" required spellcheck="false" autocapitalize="none"></div>
+          </div>
+          <small id="endpoint-help">Только http://127.0.0.1 или http://[::1] с портом.</small>
+        </details>
+        <button id="start" class="primary" type="submit" disabled>Начать интервью</button>
+      </form>
+    </section>
+
+    <section id="interview" hidden aria-busy="false">
+      <p class="eyebrow">Интервью</p>
+      <h1 id="interview-title" class="wrap" tabindex="-1"></h1>
+      <div id="question" hidden>
+        <p id="question-text" class="preserve"></p>
+        <form id="answer-form" autocomplete="off" hidden>
+          <label for="answer">Ваш ответ</label>
+          <textarea id="answer" name="answer" rows="7" aria-describedby="answer-help" spellcheck="true"></textarea>
+          <small id="answer-help" class="answer-help">⌘ Enter или Ctrl Enter — ответить. Черновик хранится только в этой вкладке.</small>
+          <div class="actions" style="margin-top: 20px">
+            <button id="answer-button" type="submit" class="primary">Ответить</button>
+            <button id="skip" type="button">Пропустить</button>
+          </div>
+        </form>
+        <details id="hint" class="hint">
+          <summary><span class="bulb" aria-hidden="true">💡</span>Подсказка из заметки<span id="hint-path"></span></summary>
+          <div id="hint-source"></div>
+        </details>
+      </div>
+      <div id="feedback" hidden>
+        <div id="submitted" hidden><h3>Ваш ответ</h3><p id="submitted-text" class="preserve"></p></div>
+        <h2>Сравнение с заметками</h2>
+        <p id="feedback-label"></p>
+        <p id="feedback-text" class="preserve"></p>
+        <p class="muted">Это сравнение с заметкой, а не объективная оценка. Проверенная цитата не гарантирует верную интерпретацию.</p>
+        <div id="feedback-source"></div>
+        <div class="actions"><button id="next" type="button" class="primary">Следующий вопрос</button></div>
+      </div>
+      <div id="recovery" hidden>
+        <p id="recovery-text" class="wrap"></p>
+        <div class="actions"><button type="button" id="retry" class="primary">Повторить</button></div>
+      </div>
+      <div id="outcome" hidden>
+        <p id="outcome-text"></p>
+        <ul id="suggestions"></ul>
+      </div>
+      <div class="actions" style="margin-top: 24px">
+        <button id="resume" type="button" class="primary" hidden>Продолжить</button>
+        <button id="new-session" type="button" hidden>Новое интервью</button>
+      </div>
+    </section>
+
+    <section id="saved">
+      <h2>Сохранённые интервью</h2>
+      <label for="session-list">Интервью</label>
+      <select id="session-list" disabled><option value="">Загружаем список…</option></select>
+      <div class="actions">
+        <button id="open-session" type="button" disabled>Открыть</button>
+        <button id="refresh-sessions" type="button" disabled>Обновить список</button>
+      </div>
+      <small id="saved-help">Открытие восстанавливает состояние. Продолжение — отдельное действие.</small>
+      <p id="unreadable" class="muted" hidden></p>
+    </section>
+  </main>
+  <script>
+    'use strict';
+    const $ = id => document.getElementById(id);
+    const storageKey = 'coach.selectedSession';
+    let token = '', selected = '', view = null, job = null, sessions = [];
+    let connected = false, posting = false, reading = false, pollTimer = null, generation = 0;
+    let operation = null;
+    // Only the selected ID survives a reload. All answer text stays in this tab.
+    const answers = new Map();
+    try { selected = localStorage.getItem(storageKey) || ''; } catch (_) { /* Storage may be unavailable. */ }
+
+    const errors = {
+      answer_too_large: 'Сократите ответ. Полный текст сохранён в поле.',
+      request_too_large: 'Запрос слишком большой. Сократите ответ или параметры интервью; текст сохранён.',
+      body_too_large: 'Запрос слишком большой. Сократите ответ; текст сохранён.',
+      source_changed: 'Заметка изменилась. Завершите интервью и начните новое.',
+      invalid_source: 'Заметку не удалось прочитать. Проверьте путь и доступ к файлу.',
+      invalid_vault: 'Не удалось открыть Vault. Проверьте путь к папке.',
+      invalid_note: 'Не удалось открыть заметку внутри Vault.',
+      invalid_endpoint: 'Укажите локальный HTTP-адрес 127.0.0.1 или [::1] с портом.',
+      invalid_model: 'Проверьте название локальной модели.',
+      model_unavailable: 'Локальная модель недоступна. Проверьте Ollama и выбранную модель.',
+      timeout: 'Локальная модель не ответила вовремя.',
+      invalid_output: 'Модель вернула ответ в неподдерживаемом формате.',
+      invalid_citation: 'Цитату модели не удалось подтвердить по заметке.',
+      response_too_large: 'Ответ модели превышает допустимый размер.',
+      index_busy: 'Индекс заметок сейчас занят.',
+      index_unavailable: 'Индекс заметок недоступен.',
+      invalid_index: 'Не удалось прочитать индекс заметок.',
+      state_unavailable: 'Сохранённое состояние недоступно.',
+      persistence_failure: 'Не удалось сохранить состояние интервью.',
+      invalid_state: 'Не удалось прочитать сохранённое интервью.',
+      session_not_found: 'Сохранённое интервью не найдено.',
+      invalid_session_id: 'Некорректный идентификатор интервью.',
+      invalid_request: 'Сервер не принял запрос. Проверьте заполненные поля.',
+      invalid_answer: 'Введите ответ перед отправкой.',
+      interrupted: 'Работа прервалась. Сохранённое состояние можно открыть снова.',
+      retry_required: 'Сначала восстановите возможность ответить.',
+      session_paused: 'Интервью на паузе. Сначала нажмите «Продолжить».',
+      session_finished: 'Интервью завершено.',
+      answer_not_expected: 'Состояние изменилось. Обновите интервью перед ответом.',
+      skip_not_expected: 'В этом состоянии нельзя пропустить вопрос.',
+      next_not_expected: 'Следующий вопрос сейчас недоступен.',
+      retry_not_needed: 'Повторный запрос сейчас не нужен.',
+      forbidden: 'Сервер не принял доступ. Восстановите связь с локальным сервером.',
+      unauthorized: 'Доступ к серверу изменился. Восстановите связь.',
+      invalid_token: 'Доступ к серверу изменился. Восстановите связь.',
+      invalid_host: 'Адрес страницы не совпадает с адресом локального сервера.',
+      invalid_origin: 'Откройте страницу по адресу, указанному локальным сервером.',
+      corrupt_state: 'Не удалось прочитать сохранённое интервью.',
+      internal_error: 'Локальный сервер не смог выполнить действие.',
+      server_closed: 'Локальный сервер остановлен.',
+      request_id_conflict: 'Сервер отклонил идентификатор запроса. Восстановите состояние перед новой попыткой.',
+      job_busy: 'Выполняется другой запрос. Новый запрос не добавлен в очередь.'
+    };
+
+    function errorMessage(code) {
+      return errors[code] || 'Не удалось выполнить действие. Восстановите состояние перед новой попыткой.';
+    }
+    function showError(message, reconnect = false) {
+      $('error-text').textContent = message;
+      $('request-error').hidden = false;
+      $('reconnect').hidden = !reconnect;
+      $('dismiss-error').hidden = reconnect;
+    }
+    function clearError() { $('request-error').hidden = true; }
+    function select(id) {
+      selected = id;
+      try {
+        if (id) localStorage.setItem(storageKey, id);
+        else localStorage.removeItem(storageKey);
+      } catch (_) { /* Selection still works without storage. */ }
+    }
+    function requestId() {
+      const bytes = new Uint8Array(16);
+      crypto.getRandomValues(bytes);
+      return Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
+    }
+    async function api(path, payload) {
+      const abort = new AbortController();
+      const timer = setTimeout(() => abort.abort(), 20000);
+      try {
+        const response = await fetch(path, {
+          method: payload ? 'POST' : 'GET', mode: 'same-origin', credentials: 'same-origin',
+          cache: 'no-store', redirect: 'error', signal: abort.signal,
+          headers: payload ? { 'Content-Type': 'application/json', 'X-Coach-Token': token } : {},
+          ...(payload ? { body: JSON.stringify(payload) } : {})
+        });
+        const data = await response.json();
+        if (!response.ok) {
+          const error = new Error('api');
+          error.data = data;
+          error.httpStatus = response.status;
+          throw error;
+        }
+        return data;
+      } finally { clearTimeout(timer); }
+    }
+    function disconnected(unknownJob = false, code = null) {
+      connected = false;
+      clearTimeout(pollTimer);
+      showError(unknownJob
+        ? 'Сервер больше не знает этот запрос. Восстановите сохранённое состояние; действие не будет отправлено повторно.'
+        : (code ? errorMessage(code) + ' ' : 'Связь с локальным сервером потеряна. ')
+          + 'Результат последнего действия может быть уже сохранён. Восстановите состояние; действие не будет отправлено повторно.', true);
+      render();
+    }
+    function source(container, citation) {
+      container.replaceChildren();
+      if (!citation) return;
+      const block = document.createElement('div');
+      block.className = 'source';
+      const meta = document.createElement('div');
+      meta.className = 'source-meta wrap';
+      for (const text of [citation.path, citation.heading || 'Без заголовка',
+        `Строки ${citation.start_line}–${citation.end_line}`]) {
+        const p = document.createElement('p');
+        p.textContent = text;
+        meta.append(p);
+      }
+      const quote = document.createElement('blockquote');
+      quote.className = 'preserve';
+      quote.textContent = citation.quote;
+      block.append(meta, quote);
+      container.append(block);
+    }
+    function memory() {
+      if (!answers.has(selected)) answers.set(selected, { key: '', draft: '', submitted: '', needsReentry: false });
+      return answers.get(selected);
+    }
+    function applyView(next) {
+      view = next;
+      const entry = memory();
+      const key = next.question ? JSON.stringify(next.question) : '';
+      if (key !== entry.key) {
+        entry.key = key;
+        entry.draft = '';
+        entry.submitted = '';
+        entry.needsReentry = false;
+        $('hint').open = false;
+      }
+      if (next.phase === 'await_answer' && next.error && !['answer_too_large', 'request_too_large'].includes(next.error)) entry.needsReentry = true;
+      $('answer').value = entry.draft;
+    }
+    function ownJob() { return job && job.status === 'running' && job.session_id === selected; }
+    function anyJob() { return job && job.status === 'running'; }
+    function statusLabel() {
+      if (!connected) return 'Нет связи с локальным сервером';
+      if (reading) return 'Восстанавливаем сохранённое состояние…';
+      if (ownJob()) {
+        if (job.stop_requested === 'finish') return 'Завершение запрошено. Ждём окончания текущего вызова.';
+        if (job.stop_requested === 'pause') return 'Пауза запрошена. Ждём окончания текущего вызова.';
+        if (operation?.action === 'answer') return 'Проверяем ответ…';
+        if (['pause', 'finish'].includes(operation?.action)) return 'Сохраняем состояние…';
+        if (operation?.action === 'resume') return 'Продолжаем интервью…';
+        if (view?.phase === 'indexing') return 'Индексируем заметки…';
+        if (['discovery', 'expansion'].includes(view?.phase)) return 'Ищем вопрос…';
+        if (view?.phase === 'await_answer') return 'Выполняется запрос к локальной модели…';
+        return 'Готовим вопрос…';
+      }
+      if (posting) return 'Отправляем запрос…';
+      if (!view) return 'Готово к началу';
+      if (view.status === 'finished') return 'Интервью завершено';
+      if (view.status === 'paused') return 'На паузе';
+      if (view.error === 'source_changed') return 'Заметка изменилась';
+      if (view.status === 'blocked') return 'Работа остановлена';
+      return {
+        await_answer: 'Ваш ход', await_next: 'Сравнение с заметками',
+        indexing: 'Индексация ожидает продолжения', discovery: 'Поиск ожидает продолжения',
+        expansion: 'Поиск ожидает продолжения', need_question: 'Вопрос ожидает подготовки',
+        refused: 'Тема не найдена в завершённом поиске',
+        search_incomplete: 'Поиск не завершён', exhausted: 'Материал закончился'
+      }[view.phase] || 'Состояние интервью восстановлено';
+    }
+    function render() {
+      const running = Boolean(anyJob());
+      const locked = !connected || posting || reading || running;
+      const active = view?.status === 'active';
+      const blocked = view?.status === 'blocked';
+      const finished = view?.status === 'finished';
+      const changed = view?.error === 'source_changed';
+      const hasView = Boolean(view && selected);
+      $('setup').hidden = hasView;
+      $('interview').hidden = !hasView;
+      $('session-controls').hidden = !hasView || finished;
+      $('pause').hidden = view?.status === 'paused' || changed;
+      // A stop is accepted during our own call, including a pending assessment.
+      const stopLocked = !connected || posting || reading || (running && !ownJob());
+      $('pause').disabled = stopLocked || Boolean(ownJob() && job.stop_requested);
+      $('finish').disabled = stopLocked || Boolean(ownJob() && job.stop_requested === 'finish');
+      $('busy-notice').hidden = !connected || !running || Boolean(ownJob());
+      $('open-active').disabled = posting || reading;
+      const scan = view?.scan;
+      const progress = scan ? ` · обработано ${scan.done}${scan.total || scan.scan_complete ? '/' + scan.total : ''} заметок${scan.excluded ? `, недоступно ${scan.excluded}` : ''}` : '';
+      $('status').textContent = statusLabel() + progress;
+      $('interview').setAttribute('aria-busy', String(Boolean(ownJob() || reading)));
+      $('start').disabled = locked;
+      $('refresh-sessions').disabled = !connected || reading || posting;
+      $('session-list').disabled = !connected || reading || posting || !sessions.length;
+      $('open-session').disabled = !connected || reading || posting || !$('session-list').value;
+      if (!hasView) return;
+
+      const meta = view.meta || sessions.find(item => item.session_id === selected);
+      $('interview-title').textContent = meta?.topic || meta?.note || 'Интервью по заметкам';
+      $('question').hidden = !view.question || finished;
+      $('question-text').textContent = view.question?.text || '';
+      const citation = view.question?.citation;
+      $('hint-path').textContent = citation ? citation.path + (citation.heading ? ' · ' + citation.heading : '') : '';
+      source($('hint-source'), citation);
+      $('answer-form').hidden = view.phase !== 'await_answer' || finished;
+      $('answer').disabled = !active || locked || changed;
+      $('answer-button').disabled = !active || locked || changed || memory().needsReentry || !$('answer').value.trim();
+      $('skip').disabled = locked || changed || (!active && !blocked);
+      $('feedback').hidden = !view.feedback || finished;
+      $('feedback-text').textContent = view.feedback?.text || '';
+      $('feedback-label').textContent = {
+        supported: 'Согласуется с заметкой', partial: 'Частично согласуется с заметкой',
+        not_supported: 'Не подтверждается заметкой', uncertain: 'Не удалось уверенно сопоставить'
+      }[view.feedback?.label] || 'Сопоставление остаётся неопределённым';
+      source($('feedback-source'), view.feedback?.citation);
+      const submitted = memory().submitted;
+      $('submitted').hidden = !submitted;
+      $('submitted-text').textContent = submitted;
+      $('next').disabled = locked || !active || changed;
+
+      const pendingPhase = ['need_question', 'indexing', 'discovery', 'expansion'].includes(view.phase);
+      $('recovery').hidden = Boolean(ownJob()) || finished || view.status === 'paused' || (!blocked && !pendingPhase && !memory().needsReentry);
+      $('recovery-text').textContent = changed ? errorMessage('source_changed')
+        : blocked ? errorMessage(view.error) + (view.phase === 'await_answer' ? ' Нажмите «Ввести ответ заново», затем отредактируйте или введите ответ и отправьте его сами.' : '')
+        : memory().needsReentry ? 'Введите или отредактируйте ответ перед отправкой. Автоматически он не отправляется.'
+        : 'Сохранённая работа ожидает продолжения. Запустите её явно.';
+      $('retry').hidden = changed || (memory().needsReentry && !blocked);
+      $('retry').textContent = blocked && view.phase === 'await_answer' ? 'Ввести ответ заново' : 'Повторить';
+      $('retry').disabled = locked;
+      $('resume').hidden = view.status !== 'paused' || changed;
+      $('resume').disabled = locked;
+      const terminal = ['refused', 'search_incomplete', 'exhausted'].includes(view.phase);
+      $('new-session').hidden = !(terminal || finished || changed);
+      $('new-session').disabled = posting || reading || Boolean(ownJob());
+      $('outcome').hidden = !terminal && !finished;
+      $('outcome-text').textContent = finished ? 'Интервью завершено. Сохранённое состояние осталось доступным.' : {
+        refused: 'В завершённом поиске не найден материал для вопроса по этой теме. Можно выбрать тему из заметок или начать новое интервью.',
+        search_incomplete: 'Поиск не завершён: достигнут предел поиска или часть заметок недоступна. Это не означает, что темы нет. Начните интервью с более узкой темой.',
+        exhausted: 'Нового материала для вопросов в этом интервью больше нет. Можно поставить его на паузу или завершить.'
+      }[view.phase] || '';
+      $('suggestions').replaceChildren();
+      if (!finished) for (const item of view.suggestions || []) {
+        const li = document.createElement('li');
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'wrap';
+        button.textContent = item.topic;
+        const path = document.createElement('small');
+        path.textContent = item.path + (item.heading ? ' · ' + item.heading : '');
+        button.append(path);
+        button.disabled = locked;
+        button.addEventListener('click', () => newInterview(item.topic, meta?.vault || ''));
+        li.append(button);
+        $('suggestions').append(li);
+      }
+    }
+
+    function renderSessions(data) {
+      sessions = data.sessions || [];
+      $('session-list').replaceChildren();
+      const placeholder = document.createElement('option');
+      placeholder.value = '';
+      placeholder.textContent = sessions.length ? 'Выберите интервью' : 'Сохранённых интервью пока нет';
+      $('session-list').append(placeholder);
+      const labels = { active: 'В работе', paused: 'На паузе', blocked: 'Остановлено', finished: 'Завершено' };
+      for (const item of sessions) {
+        const option = document.createElement('option');
+        option.value = item.session_id;
+        const date = new Date(item.updated_at * 1000);
+        option.textContent = `${item.topic || item.note || 'Интервью'} · ${labels[item.status] || 'Сохранено'} · ${date.toLocaleString('ru-RU')}`;
+        $('session-list').append(option);
+      }
+      if (sessions.some(item => item.session_id === selected)) $('session-list').value = selected;
+      $('unreadable').hidden = !data.unreadable;
+      $('unreadable').textContent = `Не удалось прочитать сохранённые интервью: ${data.unreadable || 0}.`;
+    }
+    async function readSelected() {
+      if (!selected) { view = null; return; }
+      const id = selected;
+      const next = await api('/api/session?session_id=' + encodeURIComponent(id));
+      if (selected !== id) return;
+      if (!next.session_id) {
+        showError(errorMessage(next.error));
+        view = null;
+        return;
+      }
+      if (next.active_job) job = next.active_job;
+      applyView(next);
+    }
+    function schedulePoll() {
+      clearTimeout(pollTimer);
+      if (connected && anyJob()) pollTimer = setTimeout(poll, 900);
+    }
+    async function poll() {
+      const watched = job;
+      const epoch = generation;
+      if (!watched || !connected) return;
+      if (posting || reading) { schedulePoll(); return; }
+      try {
+        const data = await api('/api/job?job_id=' + encodeURIComponent(watched.job_id));
+        if (epoch !== generation || job?.job_id !== watched.job_id) return;
+        if (posting || reading) { schedulePoll(); return; }
+        // A stop response may arrive after a poll was started. Never erase its intent.
+        if (data.job.status === 'running' && job.stop_requested) data.job.stop_requested = job.stop_requested;
+        job = data.job;
+        if (job.status === 'done') {
+          const completed = job;
+          reading = true;
+          render();
+          await readSelected();
+          renderSessions(await api('/api/sessions'));
+          const failure = completed.error || completed.result?.error;
+          if (completed.session_id === selected && failure && !(view?.status === 'blocked' && view.error === failure) && !['topic_not_found', 'search_incomplete'].includes(failure)) showError(errorMessage(failure));
+          if (operation?.session_id === selected && operation.reentry && view?.phase === 'await_answer' && view.status === 'active') memory().needsReentry = true;
+          operation = null;
+          if (job?.job_id === completed.job_id && job.status === 'done') job = null;
+          reading = false;
+          render();
+          if (completed.session_id === selected && view?.status === 'active' && view.phase === 'await_answer') $('answer').focus();
+        } else render();
+        schedulePoll();
+      } catch (error) {
+        reading = false;
+        disconnected(error.data?.error === 'job_not_found', error.data?.error);
+      }
+    }
+    async function reconnect() {
+      if (reading || posting) return;
+      reading = true;
+      generation++;
+      clearTimeout(pollTimer);
+      render();
+      try {
+        const config = await api('/api/config');
+        if (!config.ok || !config.token) throw new Error('config');
+        token = config.token;
+        if (!$('endpoint').value) $('endpoint').value = config.endpoint;
+        if (!$('model').value) $('model').value = config.model;
+        job = config.active_job;
+        renderSessions(await api('/api/sessions'));
+        if (!selected && anyJob()) select(job.session_id);
+        try { await readSelected(); }
+        catch (error) {
+          if (!error.data || error.httpStatus >= 500) throw error;
+          view = null;
+          showError(errorMessage(error.data.error));
+        }
+        connected = true;
+        operation = null; // Read state first; never replay a lost mutation.
+        if (view || !selected) clearError();
+      } catch (error) {
+        disconnected(false, error.data?.error);
+      } finally {
+        reading = false;
+        render();
+        schedulePoll();
+      }
+    }
+    async function openSession(id) {
+      if (!id || posting || reading || !connected) return;
+      reading = true;
+      select(id);
+      view = null;
+      clearError();
+      render();
+      try { await readSelected(); }
+      catch (error) {
+        if (error.data) showError(errorMessage(error.data.error));
+        else disconnected();
+      } finally {
+        reading = false;
+        render();
+        schedulePoll();
+        if (view) $('interview-title').focus();
+      }
+    }
+    async function mutate(path, payload, action) {
+      if (!connected || posting || reading) return;
+      if (anyJob() && !(ownJob() && ['pause', 'finish'].includes(action))) return;
+      posting = true;
+      clearError();
+      const reentry = (action === 'retry' || action === 'resume') && view?.phase === 'await_answer' && Boolean(view.error);
+      // Keep the assessment label while a stop request is being sent.
+      if (!['pause', 'finish'].includes(action) || !anyJob()) operation = { action, session_id: selected, reentry };
+      if (action === 'answer') memory().submitted = payload.answer;
+      render();
+      try {
+        const data = await api(path, { request_id: requestId(), ...payload });
+        if (!data.ok || !data.job) {
+          showError(errorMessage(data.error));
+          await readSelected();
+          return;
+        }
+        job = data.job;
+        if (path === '/api/start') {
+          select(job.session_id);
+          operation.session_id = selected;
+          await readSelected();
+          $('interview-title').focus();
+        }
+        if (job.status === 'done') {
+          const completed = job;
+          await readSelected();
+          renderSessions(await api('/api/sessions'));
+          if (reentry && view?.phase === 'await_answer' && view.status === 'active') memory().needsReentry = true;
+          const failure = completed.error || completed.result?.error;
+          if (failure && !(view?.status === 'blocked' && view.error === failure) && !['topic_not_found', 'search_incomplete'].includes(failure)) showError(errorMessage(failure));
+          operation = null;
+          if (job?.job_id === completed.job_id && job.status === 'done') job = null;
+          if (view?.status === 'active' && view.phase === 'await_answer') $('answer').focus();
+        }
+      } catch (error) {
+        if (error.data && error.httpStatus < 500) {
+          if (error.data.error === 'job_busy') job = error.data.job || error.data.active_job || job;
+          showError(errorMessage(error.data.error), ['forbidden', 'unauthorized', 'invalid_token'].includes(error.data.error));
+          // A typed rejection does not resend anything; restore the authoritative view.
+          try { await readSelected(); } catch (_) { disconnected(); }
+        } else disconnected(false, error.data?.error);
+      } finally {
+        posting = false;
+        render();
+        schedulePoll();
+        if (connected && !anyJob() && view?.status === 'active' && view.phase === 'await_answer') $('answer').focus();
+        else if (action === 'start' && view) $('interview-title').focus();
+      }
+    }
+    function action(name) {
+      if (!selected) return;
+      if (name === 'answer' && (!$('answer').value.trim() || memory().needsReentry)) return;
+      mutate('/api/action', { session_id: selected, action: name,
+        ...(name === 'answer' ? { answer: $('answer').value } : {}) }, name);
+    }
+    function setMode(mode) {
+      document.querySelector(`input[name="mode"][value="${mode}"]`).checked = true;
+      $('topic-field').hidden = mode !== 'topic';
+      $('note-field').hidden = mode !== 'note';
+      $('topic').disabled = mode !== 'topic';
+      $('topic').required = mode === 'topic';
+      $('note').disabled = mode !== 'note';
+      $('note').required = mode === 'note';
+    }
+    function newInterview(topic, vault) {
+      if (posting || reading || ownJob()) return;
+      select('');
+      view = null;
+      clearError();
+      if (typeof topic === 'string') { setMode('topic'); $('topic').value = topic; }
+      if (vault) $('vault').value = vault;
+      render();
+      $('setup-title').focus();
+    }
+    $('start-form').addEventListener('submit', event => {
+      event.preventDefault();
+      if ($('start').disabled) return;
+      const mode = document.querySelector('input[name="mode"]:checked').value;
+      mutate('/api/start', { vault: $('vault').value, [mode]: $(mode).value,
+        endpoint: $('endpoint').value, model: $('model').value }, 'start');
+    });
+    document.querySelectorAll('input[name="mode"]').forEach(input => input.addEventListener('change', () => setMode(input.value)));
+    $('answer').addEventListener('input', () => {
+      memory().draft = $('answer').value;
+      memory().needsReentry = false;
+      $('answer-button').disabled = !connected || posting || reading || Boolean(anyJob()) || view?.status !== 'active' || !$('answer').value.trim();
+      if (view?.status === 'active' && view.phase === 'await_answer') $('recovery').hidden = true;
+    });
+    $('answer-form').addEventListener('submit', event => { event.preventDefault(); if (!$('answer-button').disabled) action('answer'); });
+    $('answer').addEventListener('keydown', event => {
+      if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && !event.isComposing) {
+        event.preventDefault();
+        if (!$('answer-button').disabled) $('answer-form').requestSubmit();
+      }
+    });
+    for (const name of ['skip', 'next', 'pause', 'finish', 'resume', 'retry']) $(name).addEventListener('click', () => action(name));
+    $('new-session').addEventListener('click', () => newInterview());
+    $('reconnect').addEventListener('click', reconnect);
+    $('dismiss-error').addEventListener('click', clearError);
+    $('open-active').addEventListener('click', () => openSession(job?.session_id));
+    $('open-session').addEventListener('click', () => openSession($('session-list').value));
+    $('session-list').addEventListener('change', render);
+    $('refresh-sessions').addEventListener('click', async () => {
+      if (reading || posting || !connected) return;
+      reading = true;
+      render();
+      try { renderSessions(await api('/api/sessions')); }
+      catch (error) { if (error.data) showError(errorMessage(error.data.error)); else disconnected(); }
+      finally { reading = false; render(); }
+    });
+    reconnect();
+  </script>
+</body>
+</html>

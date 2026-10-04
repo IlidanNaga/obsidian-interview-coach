@@ -1,12 +1,14 @@
 # Architecture
 
-The current implementation supports explicit-note and topic interviews with standard-library source loading, local transport and JSON snapshots. [BIBLE.md](BIBLE.md) defines the broader contract; whole-Vault coverage is still planned. Usage is in [README.md](README.md).
+The current implementation supports explicit-note and topic interviews with standard-library source loading, local transport and JSON snapshots, shared by a local browser interface and CLI. [BIBLE.md](BIBLE.md) defines the broader contract; whole-Vault coverage is still planned. Usage is in [README.md](README.md).
 
 ## Modules and flow
 
 | File | Current responsibility |
 | --- | --- |
 | [interview.py](interview.py) | `start_session(dict)` / `dispatch(dict)` return JSON-shaped results; deterministic note/topic controller, request construction, proposal validation, durable state and thin interactive CLI. |
+| [web.py](web.py) / [web.html](web.html) | Loopback HTTP bridge and native browser UI, one background worker, ephemeral job/request IDs, read-only polling and deferred stop intents. |
+| [test_web.py](test_web.py) | Synthetic controller/HTTP checks for protected mutations, concurrency, stops and recovery. |
 | [vault_source.py](vault_source.py) | `load_note(dict)` resolves/reads one contained UTF-8 Markdown file, identifies sections/chunks and source identity; `cite(chunk, quote)` derives validated references. Source failures raise classified `SourceError`. |
 | [topic_search.py](topic_search.py) | Private resumable SQLite FTS5 index, contained Vault inventory, candidate search and suggestions from actual notes. |
 | [ollama_smoke.py](ollama_smoke.py) | `chat(dict)` provides bounded Ollama transport; `smoke(dict)` checks structured output using a synthetic prompt; `--self-check` exercises mocked transport. |
@@ -15,6 +17,7 @@ The current implementation supports explicit-note and topic interviews with stan
 | [.gitignore](.gitignore) | Backstop for local artifacts, not a publication/privacy guarantee. |
 
 ```text
+Browser -> protected HTTP routes -> one worker
 CLI / Python dictionary
   -> controller -> contained note -> ordered section chunks
   -> save pending session -> selected chunk -> local chat request
@@ -44,7 +47,7 @@ The model must return a nonblank exact quote occurring once in the selected chun
 
 `chat` posts to `/api/chat` only at an explicit `http://127.0.0.1:PORT` or `http://[::1]:PORT` base URL, with no credentials, extra path, query or fragment. Redirects and environment proxies are disabled; the application has no cloud fallback. Ollama's own cloud setting is outside this transport boundary and must be disabled separately for local-only execution.
 
-Requests are non-streaming, with `think=false`, temperature `0`, `num_ctx=4096`, `num_predict=256`, a supplied JSON schema, a maximum 120-second socket timeout, an 8192-byte complete request body and a 256-KiB response cap. The controller checks each call against the snapshot's stored cap and passes that cap to the transport, which independently enforces it and never permits more than 8192 bytes. Direct transport calls default to 8192 bytes. The transport rejects incomplete/length-truncated responses, malformed JSON, non-object content and non-finite numbers; the controller validates the actual proposal fields and citations. These are per-call limits, not an overall session duration or process memory quota. The per-session lock prevents concurrent operations on the same session; no global concurrency limiter is implemented.
+Requests are non-streaming, with `think=false`, temperature `0`, `num_ctx=4096`, `num_predict=256`, a supplied JSON schema, a maximum 120-second socket timeout, an 8192-byte complete request body and a 256-KiB response cap. The controller checks each call against the snapshot's stored cap and passes that cap to the transport, which independently enforces it and never permits more than 8192 bytes. Direct transport calls default to 8192 bytes. The transport rejects incomplete/length-truncated responses, malformed JSON, non-object content and non-finite numbers; the controller validates the actual proposal fields and citations. These are per-call limits, not an overall session duration or process memory quota. The per-session lock prevents concurrent operations on the same session; the browser bridge additionally serializes its own work globally, but CLI/other state directories are outside that limiter.
 
 ## Durable transitions and recovery
 
@@ -67,6 +70,14 @@ Topic sessions use a separate strict version-2 snapshot. Their phases include in
 Both validators accept exactly the old 3072-byte or new 8192-byte stored request cap, with all other limits still checked strictly. Resume by ID keeps that cap and the stored chunk size, cursor, index and current question; it does not rechunk or migrate an existing v1/v2 session. New snapshots store 8192 bytes, and repeated-start index matching includes these limits.
 
 State storage must be outside the repository and Vault, user-owned and private. Operations take a nonblocking `fcntl` session lock (`session_busy` on collision). Snapshots use a private temporary file, file `fsync`, atomic replacement and directory `fsync`, with a 128-KiB size cap. Reads validate schema, ownership, permissions, regular-file/symlink constraints and size. Corrupt snapshots are refused without overwrite; persistence failures are reported, and recovery uses the last readable valid snapshot rather than assuming an in-memory result was saved. The tests cover preservation of an earlier snapshot when replacement fails.
+
+## Browser worker and recovery
+
+`read_session(dict)` and `list_sessions(dict)` return validated saved views/metadata without source traversal, inference or state writes. Deferred start saves the session before returning its ID. `web.py` accepts one mutation, then a worker performs it once and advances only active preparation phases (indexing/discovery/expansion/pending question). Errors stop work; answers, skip and next require explicit user actions. Cooperative checks stop before another model/candidate call. Pause/finish during a call record an in-memory intent and save it after that call; finish wins. No request is forcibly cancelled.
+
+Job handles and bounded request-ID fingerprints live only in process memory; duplicate IDs attach to the same job and conflicting payloads reject. Busy requests return the active job, with no queue. A server owner lock covers one state directory; per-session controller locks remain. After process restart, job handles are unknown and the browser restores only the durable session, without replaying mutations. Answers/drafts stay in page/worker memory, never job results or localStorage; only the selected session ID survives reload.
+
+The HTTP server binds `127.0.0.1`, validates exact Host/Origin and a per-process mutation token, limits JSON bodies, rejects ambiguous framing/duplicate keys, disables caching and serves no arbitrary files. Source text uses DOM `textContent`. It exposes local sensitive session views; it provides no multiuser authentication or protection from other processes running as the same user. The browser shows the source hint below answer buttons and unfolds quotes on request; feedback is explicitly note-based. Whole-Vault mode remains unavailable.
 
 ## Privacy and trust boundaries
 

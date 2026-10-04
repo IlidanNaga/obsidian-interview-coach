@@ -2,7 +2,7 @@
 
 Rehearse interview answers against your own Markdown notes using a local Ollama model. Questions and feedback cite supplied note text; feedback compares your answer with the notes, rather than giving an objective grade.
 
-**Implemented:** explicit-note and topic interviews through a CLI and reusable JSON API, validated citations, skip, pause/resume, retry, and finish. A topic interview can move between notes and refuses to invent material when no supported chunk is found. **Planned:** whole-Vault coverage (step 4) and usefulness/resource evaluation before a framework comparison (step 5). See the product contract in [BIBLE.md](BIBLE.md) and the [architecture](ARCHITECTURE.md).
+**Implemented:** explicit-note and topic interviews through a local browser interface, CLI and reusable JSON API, validated citations, skip, pause/resume, retry, and finish. A topic interview can move between notes and refuses to invent material when no supported chunk is found. **Planned:** whole-Vault coverage (step 4) and usefulness/resource evaluation before a framework comparison (step 5). See the product contract in [BIBLE.md](BIBLE.md) and the [architecture](ARCHITECTURE.md).
 
 ## Prerequisites
 
@@ -10,6 +10,24 @@ Rehearse interview answers against your own Markdown notes using a local Ollama 
 - A macOS/POSIX environment supporting `fcntl` locks and the directory/file operations used for persistence.
 - Local Ollama with a downloaded model. The default is `qwen3.5:9b`; check that it fits and runs on your machine. For that model, download it once with `ollama pull qwen3.5:9b` if needed.
 - A readable UTF-8 `.md` note inside a Vault for explicit-note mode, or a Vault with Markdown notes for topic mode. No Obsidian plugin or special note layout is required. Topic indexing uses Python's bundled SQLite FTS5.
+
+## Browser interface
+
+Start the local Ollama service as described below, then run from the repository root:
+
+```sh
+PYENV_VERSION=3.13.11 pyenv exec python web.py
+```
+
+Open the printed URL (`http://127.0.0.1:8765` by default). Enter a Vault path and either a topic or a contained note path. Connection settings select the local endpoint/model; saved sessions retain their original settings. Whole-Vault mode is not implemented. The browser advances indexing and discovery until a question or an explicit outcome, without a required question count.
+
+Answer or skip the question. Below those buttons, **Подсказка из заметки** shows the note path and unfolds the quoted source. Feedback is a comparison with that note. Next advances only when requested. Pause and finish during inference take effect **after the current request**, before another model call; finish supersedes a pending pause.
+
+Reloading reconnects to the running job. The browser stores only the selected session ID in localStorage; drafts and submitted answers stay in page memory and disappear on reload. After a server restart, open the saved session and explicitly continue/retry; re-enter any lost answer. Requests are deduplicated only within the running server. Unknown answer/next/skip requests are never replayed automatically.
+
+The server binds only `127.0.0.1`, accepts the exact printed Host/Origin, and requires a per-process token for JSON mutations. It serves only the UI and named API routes, with no CORS or caching. One worker runs at a time, with no queue; another mutation receives the active job. A state-directory owner lock prevents a second web server sharing that storage. This is a local personal interface, not a multiuser service or a machine-wide model scheduler.
+
+Optional flags: `--port`, `--endpoint`, `--model`, `--state-dir`. State remains outside the repository and Vault. GET/list operations never advance a session or call the model.
 
 ## CLI
 
@@ -128,10 +146,12 @@ With the Python environment above:
 
 ```sh
 pyenv exec python ollama_smoke.py --self-check
-pyenv exec python -m unittest -v test_interview test_topic_search
+pyenv exec python -m unittest -v test_web test_interview test_topic_search
 pyenv exec python interview.py start --help
 pyenv exec python interview.py resume --help
 ```
+
+[Web tests](test_web.py) exercise the real loopback HTTP server with synthetic notes and mocked inference, including authentication, duplicate/busy requests, deferred stops and restart recovery. Browser layout and interaction require browser smoke; a mocked model does not establish question or assessment quality.
 
 The transport self-check is offline and mocked. [Controller tests](test_interview.py) and [index tests](test_topic_search.py) use synthetic notes and mocked inference to check containment, citations, topic admission/refusal, multi-note progression, skip without assessment/answer retention, invalid-phase no-ops, pause/restart recovery, locking and privacy; they create fixtures in ignored `tmp/` and session fixtures in temporary storage outside the repository. They do not test whole-Vault coverage, which is planned.
 

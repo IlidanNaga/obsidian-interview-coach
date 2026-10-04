@@ -2,6 +2,8 @@
 """Note or topic interviews; answers are ephemeral and the Vault is read-only.
 
 start_session accepts vault, exactly one of note/topic, endpoint, optional model and state_dir.
+defer_inference=True prepares a saved session without indexing or model calls.
+read_session and list_sessions inspect saved state without touching the Vault.
 dispatch accepts session_id, optional state_dir, action and (for answer) answer.
 Patch the module's chat callable to exercise the same controller offline.
 """
@@ -132,7 +134,7 @@ def _endpoint(value):
     return value
 
 
-def _state_dir(value, vault=None, create=False):
+def _state_dir(value, vault=None, create=False, allow_missing=False):
     if not isinstance(value, (str, Path)) or not str(value):
         raise SessionError("invalid_state_dir")
     try:
@@ -142,6 +144,8 @@ def _state_dir(value, vault=None, create=False):
         existed = directory.exists()
         if create:
             directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if not existed and allow_missing and not create:
+            return directory
         if not directory.is_dir():
             raise SessionError("state_unavailable")
         if directory.stat().st_uid != os.getuid():
@@ -473,7 +477,7 @@ def _validate_v2(state, session_id):
         raise SessionError("corrupt_state") from None
 
 
-def _read(directory, session_id):
+def _read(directory, session_id, *, metadata=False):
     try:
         descriptor = os.open(directory / (session_id + ".json"), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
         with os.fdopen(descriptor, "rb") as stream:
@@ -493,7 +497,7 @@ def _read(directory, session_id):
             _validate_v2(state, session_id)
         else:
             _validate(state, session_id)
-        return state
+        return (state, info.st_mtime) if metadata else state
     except FileNotFoundError:
         raise SessionError("session_not_found") from None
     except (OSError, ValueError, UnicodeError, RecursionError):
@@ -590,7 +594,7 @@ def _source(state, directory=None):
     return note
 
 
-def _infer(directory, state, chunk, answer=None):
+def _infer(directory, state, chunk, answer=None, stop_requested=None):
     request = _request(state, chunk, answer)
     if _body_size(request) > state["limits"]["max_request_bytes"]:
         return _view(
@@ -600,6 +604,8 @@ def _infer(directory, state, chunk, answer=None):
         )
     try:
         try:
+            if stop_requested is not None and stop_requested():
+                return _view(state)
             result = chat(request)
         except KeyboardInterrupt:
             return _view(
@@ -870,12 +876,14 @@ def _admission(proposal, chunk):
     return {"text": proposal["question"], "citation": citation}
 
 
-def _expand(directory, state, private):
+def _expand(directory, state, private, stop_requested=None):
     # A successful expansion is durable. Failed or interrupted calls remain
     # pending so :retry can make another bounded attempt.
     with _decisions(private) as connection:
         row = connection.execute("SELECT proposal FROM decisions WHERE id = '@expansion'").fetchone()
         if row is None:
+            if stop_requested is not None and stop_requested():
+                return _view(state)
             proposal = _topic_chat(_topic_request(state))
             if (
                 not isinstance(proposal, dict)
@@ -926,8 +934,10 @@ def _topic_end(directory, state):
     return _view(state)
 
 
-def _discover(directory, state):
+def _discover(directory, state, stop_requested=None):
     try:
+        if stop_requested is not None and stop_requested():
+            return _view(state)
         if state["cursor"] >= MAX_TOPIC_CANDIDATES:
             return _topic_end(directory, state)
         private = _topic_directory(directory, state)
@@ -939,6 +949,8 @@ def _discover(directory, state):
         with _decisions(private, create=state["phase"] == "indexing"):
             pass
         if state["phase"] == "indexing":
+            if stop_requested is not None and stop_requested():
+                return _view(state)
             result = build_index({**base, "max_chunk_bytes": state["limits"]["chunk_bytes"], "max_notes": SCAN_BATCH})
             for key in ("scan_complete", "done", "total", "excluded"):
                 if key in result:
@@ -951,9 +963,11 @@ def _discover(directory, state):
             if not search["scan_complete"]:
                 return _view(state)
         if state["phase"] == "expansion":
-            return _expand(directory, state, private)
+            return _expand(directory, state, private, stop_requested)
         if state["source"] is None:
             while True:
+                if stop_requested is not None and stop_requested():
+                    return _view(state)
                 result = search_topic(
                     {**base, "topic": search["queries"][search["query"]], "limit": 1, "offset": search["offset"]}
                 )
@@ -983,13 +997,15 @@ def _discover(directory, state):
                     search["expanded"] = True
                     state["phase"] = "expansion"
                     _save(directory, state)
-                    return _expand(directory, state, private)
+                    return _expand(directory, state, private, stop_requested)
                 return _topic_end(directory, state)
         note = _topic_source(state, directory)
         chunk = _topic_chunk(state, note)
         with _decisions(private) as connection:
             row = connection.execute("SELECT proposal FROM decisions WHERE id = ?", (state["chunk_id"],)).fetchone()
             if row is None:
+                if stop_requested is not None and stop_requested():
+                    return _view(state)
                 proposal = _topic_chat(_topic_request(state, chunk))
                 question = _admission(proposal, chunk)
                 _topic_source(state, directory)
@@ -1120,14 +1136,15 @@ def _start_topic(request, endpoint, model):
                     state = _read(directory, state["session_id"])
                     if state["phase"] != "indexing" or state["status"] == "finished":
                         return _view(state)
-                    state.update(status="active", paused_status=None, error=None)
+                    if not request.get("defer_inference", False):
+                        state.update(status="active", paused_status=None, error=None)
                 _save(directory, state)
-                return _discover(directory, state)
+                return _view(state) if request.get("defer_inference", False) else _discover(directory, state)
     except (SourceError, SessionError) as error:
         return {"ok": False, "error": error.code, **({"session_id": state["session_id"]} if state else {})}
 
 
-def _dispatch_topic(directory, state, request):
+def _dispatch_topic(directory, state, request, stop_requested=None):
     action = request["action"]
     try:
         note = _topic_source(state, directory)
@@ -1146,7 +1163,7 @@ def _dispatch_topic(directory, state, request):
         state.update(status="active", error=None)
         _save(directory, state)
         if state["phase"] in {"indexing", "discovery", "expansion"}:
-            return _discover(directory, state)
+            return _discover(directory, state, stop_requested)
         return _view(state, message="Enter your answer again." if state["phase"] == "await_answer" else None)
     if state["status"] == "blocked" and action != "skip":
         return _view(state, "retry_required")
@@ -1156,14 +1173,14 @@ def _dispatch_topic(directory, state, request):
         answer = request.get("answer")
         if not isinstance(answer, str) or not answer.strip():
             return _view(state, "invalid_answer")
-        return _infer(directory, state, _topic_chunk(state, note), answer)
+        return _infer(directory, state, _topic_chunk(state, note), answer, stop_requested)
     if action != "skip" and state["phase"] != "await_next":
         return _view(state, "next_not_expected")
     state.update(
         status="active", error=None, source=None, chunk_id=None, question=None, feedback=None, phase="discovery"
     )
     _save(directory, state)
-    return _discover(directory, state)
+    return _discover(directory, state, stop_requested)
 
 
 def start_session(request: dict) -> dict:
@@ -1171,6 +1188,8 @@ def start_session(request: dict) -> dict:
     state = None
     try:
         if not isinstance(request, dict):
+            raise SessionError("invalid_request")
+        if type(request.get("defer_inference", False)) is not bool:
             raise SessionError("invalid_request")
         if ("note" in request) == ("topic" in request):
             raise SessionError("invalid_request")
@@ -1215,7 +1234,9 @@ def start_session(request: dict) -> dict:
             state["total"] = len(note["chunks"])
         with _locked(directory, state["session_id"]):
             _save(directory, state)
-            return _infer(directory, state, note["chunks"][0])
+            return (
+                _view(state) if request.get("defer_inference", False) else _infer(directory, state, note["chunks"][0])
+            )
     except (SourceError, SessionError) as error:
         result = {"ok": False, "error": error.code}
         if state is not None:
@@ -1225,7 +1246,7 @@ def start_session(request: dict) -> dict:
         return {"ok": False, "error": "invalid_request"}
 
 
-def dispatch(request: dict) -> dict:
+def dispatch(request: dict, *, _stop_requested=None) -> dict:
     """Handle answer/skip/next/pause/retry/finish/resume without model-owned actions."""
     try:
         if not isinstance(request, dict):
@@ -1266,7 +1287,7 @@ def dispatch(request: dict) -> dict:
             if state["status"] == "paused" and action != "resume":
                 return _view(state, "session_paused")
             if state["version"] == 2:
-                return _dispatch_topic(directory, state, request)
+                return _dispatch_topic(directory, state, request, _stop_requested)
             try:
                 note = _source(state)
             except SourceError as error:
@@ -1282,7 +1303,7 @@ def dispatch(request: dict) -> dict:
                 state.update(status="active", error=None)
                 _save(directory, state)
                 if state["phase"] == "need_question":
-                    return _infer(directory, state, note["chunks"][state["cursor"]])
+                    return _infer(directory, state, note["chunks"][state["cursor"]], stop_requested=_stop_requested)
                 return _view(state, message="Enter your answer again." if state["phase"] == "await_answer" else None)
             if state["status"] == "blocked" and action != "skip":
                 return _view(state, "retry_required")
@@ -1292,7 +1313,7 @@ def dispatch(request: dict) -> dict:
                 answer = request.get("answer")
                 if not isinstance(answer, str) or not answer.strip():
                     return _view(state, "invalid_answer")
-                return _infer(directory, state, note["chunks"][state["cursor"]], answer)
+                return _infer(directory, state, note["chunks"][state["cursor"]], answer, _stop_requested)
             if action != "skip" and state["phase"] != "await_next":
                 return _view(state, "next_not_expected")
             state.update(
@@ -1309,11 +1330,64 @@ def dispatch(request: dict) -> dict:
             return (
                 _view(state)
                 if state["phase"] == "exhausted"
-                else _infer(directory, state, note["chunks"][state["cursor"]])
+                else _infer(directory, state, note["chunks"][state["cursor"]], stop_requested=_stop_requested)
             )
     except (SourceError, SessionError) as error:
         return {"ok": False, "error": error.code}
     except (UnicodeError, TypeError, ValueError):
+        return {"ok": False, "error": "invalid_request"}
+
+
+def _meta(state, updated_at):
+    return {
+        "session_id": state["session_id"],
+        "vault": state["vault"] if state["version"] == 2 else state["source"]["vault"],
+        "topic": state.get("topic"),
+        "note": state["source"]["path"] if state["version"] == 1 else None,
+        "status": state["status"],
+        "phase": state["phase"],
+        "updated_at": updated_at,
+        "model": state["model"],
+        "endpoint": state["endpoint"],
+    }
+
+
+def read_session(request: dict) -> dict:
+    """Read an atomic snapshot and metadata; never lock, resume, index or infer."""
+    try:
+        if not isinstance(request, dict):
+            raise SessionError("invalid_request")
+        session_id = _session_id(request.get("session_id"))
+        directory = _state_dir(request.get("state_dir", DEFAULT_STATE_DIR))
+        state, updated_at = _read(directory, session_id, metadata=True)
+        meta = _meta(state, updated_at)
+        _state_dir(directory, meta["vault"])
+        return {**_view(state), "meta": meta}
+    except SessionError as error:
+        return {"ok": False, "error": error.code}
+    except (OSError, RuntimeError, ValueError, TypeError):
+        return {"ok": False, "error": "invalid_request"}
+
+
+def list_sessions(request: dict) -> dict:
+    """List readable private snapshots; a missing directory is an empty list."""
+    try:
+        if not isinstance(request, dict):
+            raise SessionError("invalid_request")
+        directory = _state_dir(request.get("state_dir", DEFAULT_STATE_DIR), allow_missing=True)
+        sessions, unreadable = [], 0
+        if directory.exists():
+            for path in directory.glob("*.json"):
+                result = read_session({"state_dir": directory, "session_id": path.stem})
+                if "meta" in result:
+                    sessions.append(result["meta"])
+                else:
+                    unreadable += 1
+        sessions.sort(key=lambda item: (-item["updated_at"], item["session_id"]))
+        return {"ok": True, "sessions": sessions, "unreadable": unreadable}
+    except SessionError as error:
+        return {"ok": False, "error": error.code}
+    except (OSError, RuntimeError, ValueError, TypeError):
         return {"ok": False, "error": "invalid_request"}
 
 
